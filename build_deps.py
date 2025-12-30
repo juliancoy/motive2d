@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import re
+import shlex
 from pathlib import Path
 import textwrap
 
@@ -218,6 +219,11 @@ def setup_ncnn():
     ensure_exists_or_exit("ncnn")
     build_dir = Path("ncnn/build")
     build_dir.mkdir(parents=True, exist_ok=True)
+    install_dir = build_dir / "install"
+    lib_path = install_dir / "lib" / "libncnn.a"
+    if lib_path.exists():
+        print("libncnn.a already available; skipping NCNN rebuild.")
+        return
 
     print("Configuring ncnn...")
     cmake_flags = [
@@ -225,8 +231,10 @@ def setup_ncnn():
         "-DNCNN_BUILD_BENCHMARKS=OFF",
         "-DNCNN_BUILD_TESTS=OFF",
         "-DNCNN_VULKAN=OFF",
+        "-DNCNN_SIMPLEVK=OFF",
         "-DNCNN_OPENMP=OFF",
         "-DCMAKE_BUILD_TYPE=Release",
+        f"-DCMAKE_INSTALL_PREFIX={install_dir}",
     ]
     cmake_cmd = "cmake .. " + " ".join(cmake_flags)
     run_command(cmake_cmd, cwd=build_dir)
@@ -234,7 +242,11 @@ def setup_ncnn():
     print("Building ncnn...")
     run_command(f"make -j{os.cpu_count()}", cwd=build_dir)
 
-    print("ncnn built locally in ncnn/build")
+    print("Installing ncnn into build/install")
+    install_path = shlex.quote(str(install_dir))
+    run_command(f"cmake --install . --prefix {install_path}", cwd=build_dir)
+
+    print("ncnn built and installed locally in ncnn/build/install")
 
 def setup_ffnvcodec():
     install_dir = Path("/usr/include/ffnvcodec")

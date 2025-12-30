@@ -23,7 +23,7 @@ manifest_path = os.path.join(this_dir, ".build_manifest.json")
 ffmpeg_install_dir = os.path.abspath(os.path.join(this_dir, "FFmpeg/.build/install"))
 
 # Source and object files
-main_sources = ["motive2d.cpp"]
+main_sources = ["motive2d.cpp", "yolo11l-pose.cpp"]
 exclude_sources = ["vulkan_video_bridge.cpp", "encode.cpp"]  # missing Vulkan-Video-Samples libraries
 so_sources = []
 for file in os.listdir(this_dir):
@@ -56,10 +56,10 @@ include_paths = [
     os.path.abspath(os.path.join(this_dir, "common_vv/libs")),
     os.path.abspath(os.path.join(this_dir, "vk_video_decoder/include")),
     os.path.abspath(os.path.join(this_dir, "vk_video_decoder/libs")),
+    os.path.abspath(os.path.join(this_dir, "ncnn/build/install/include")),
     os.path.abspath(os.path.join(this_dir, "ncnn/include")),
     os.path.abspath(os.path.join(this_dir, "ncnn/src")),
     os.path.abspath(os.path.join(this_dir, "ncnn/build/src")),
-    os.path.abspath(os.path.join(this_dir, "ncnn/build/install/include")),
 ]
 ffmpeg_lib_dir = os.path.join(ffmpeg_install_dir, "lib")
 lib_paths = [
@@ -67,9 +67,9 @@ lib_paths = [
     os.path.abspath(os.path.join(this_dir, "glfw/build/src")),
     ffmpeg_lib_dir,
     os.path.abspath(os.path.join(this_dir, "freetype/build")),
-    os.path.abspath(os.path.join(this_dir, "ncnn/build/src")),
     os.path.abspath(os.path.join(this_dir, "ncnn/build/glslang/glslang")),
     os.path.abspath(os.path.join(this_dir, "ncnn/build/install/lib")),
+    os.path.abspath(os.path.join(this_dir, "ncnn/build/src")),
     os.path.abspath(os.path.join(this_dir, ".")),
 ]
 core_libraries = [

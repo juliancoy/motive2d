@@ -24,3 +24,4 @@ encode
 models
 #motive large binary
 motive2d_yolo
+yolo11l-pose

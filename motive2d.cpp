@@ -18,12 +18,11 @@
 #include <array>
 #include <vector>
 
-#define NCNN_VULKAN 0
+#define NCNN_VULKAN 1
 #define NCNN_SIMPLEVK 0
 #include <ncnn/mat.h>
 #include <ncnn/net.h>
-#undef NCNN_SIMPLEVK
-#undef NCNN_VULKAN
+#include <ncnn/layer.h>
 
 namespace
 {
@@ -963,7 +962,7 @@ int main(int argc, char** argv)
         if (poseReady && detectionEnabled)
         {
             const auto& decoder = playbackState.decoder;
-            if (decoder.outputFormat == video::PrimitiveYuvFormat::NV12 &&
+            if (decoder.outputFormat == PrimitiveYuvFormat::NV12 &&
                 decoder.bytesPerComponent == 1 &&
                 !playbackState.pendingFrames.empty())
             {
