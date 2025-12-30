@@ -1,0 +1,181 @@
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+#extension GL_EXT_scalar_block_layout : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba8) uniform writeonly image2D outImage;
+
+// Detection buffer structure (matches C++ GPUDetection struct)
+struct Detection {
+    vec4 bbox;        // x, y, width, height (normalized 0-1)
+    vec4 color;       // rgba color for visualization
+    float confidence; // confidence score
+    int class_id;     // class identifier
+    int padding[2];   // padding for alignment
+};
+
+// Storage buffer for detections
+layout(set = 0, binding = 1, scalar) buffer DetectionBuffer {
+    Detection detections[];
+} detectionBuffer;
+
+// Push constants for basic overlay parameters
+layout(push_constant) uniform Push {
+    vec2 outputSize;
+    vec2 rectCenter;
+    vec2 rectSize;
+    float outerThickness;
+    float innerThickness;
+    float detectionEnabled; // 0.0 = false, 1.0 = true
+    uint detectionCount;    // Number of active detections
+} pushC;
+
+// Draw a keypoint as a circle
+void drawKeypoint(vec2 frag, vec2 center, float radius, vec4 color, inout vec4 outColor) {
+    float dist = distance(frag, center);
+    if (dist <= radius) {
+        // Draw solid circle for keypoints
+        outColor = color;
+        // Add a white border
+        if (dist >= radius - 2.0) {
+            outColor = vec4(1.0, 1.0, 1.0, 1.0);
+        }
+    }
+}
+
+// Draw a skeleton line between two keypoints
+void drawSkeletonLine(vec2 frag, vec2 p1, vec2 p2, vec4 color, inout vec4 outColor) {
+    // Vector from p1 to p2
+    vec2 lineDir = p2 - p1;
+    float lineLength = length(lineDir);
+    
+    if (lineLength < 0.001) {
+        return; // Points are too close
+    }
+    
+    vec2 lineDirNorm = lineDir / lineLength;
+    
+    // Vector from p1 to fragment
+    vec2 toFrag = frag - p1;
+    
+    // Project fragment onto line
+    float t = dot(toFrag, lineDirNorm);
+    t = clamp(t, 0.0, lineLength);
+    
+    // Closest point on line to fragment
+    vec2 closestPoint = p1 + lineDirNorm * t;
+    
+    // Distance from fragment to line
+    float dist = distance(frag, closestPoint);
+    
+    // Draw line with 2-pixel thickness
+    if (dist <= 2.0) {
+        outColor = color;
+    }
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(pushC.outputSize.x) || pixel.y >= int(pushC.outputSize.y)) {
+        return;
+    }
+
+    vec2 frag = vec2(pixel) + vec2(0.5);
+    vec2 normalizedFrag = frag / pushC.outputSize;
+    
+    vec2 halfSize = pushC.rectSize * 0.5;
+    vec2 minP = pushC.rectCenter - halfSize;
+    vec2 maxP = pushC.rectCenter + halfSize;
+
+    // Outside rect: fully transparent
+    if (frag.x < minP.x || frag.x > maxP.x || frag.y < minP.y || frag.y > maxP.y) {
+        imageStore(outImage, pixel, vec4(0.0));
+        return;
+    }
+
+    float distLeft = frag.x - minP.x;
+    float distRight = maxP.x - frag.x;
+    float distTop = maxP.y - frag.y;
+    float distBottom = frag.y - minP.y;
+    float minEdge = min(min(distLeft, distRight), min(distTop, distBottom));
+
+    vec4 color = vec4(0.0);
+    if (minEdge <= pushC.outerThickness) {
+        if (pushC.detectionEnabled > 0.5) {
+            color = vec4(1.0, 0.0, 0.0, 1.0); // Red for detection mode
+        } else {
+            color = vec4(0.0, 0.0, 0.0, 1.0); // Black otherwise
+        }
+    } else if (minEdge <= (pushC.outerThickness + pushC.innerThickness)) {
+        if (pushC.detectionEnabled > 0.5) {
+            color = vec4(1.0, 0.5, 0.5, 1.0); // Light red for inner border
+        } else {
+            color = vec4(1.0, 1.0, 1.0, 1.0); // White otherwise
+        }
+    }
+
+    // Draw pose keypoints and skeleton if enabled
+    if (pushC.detectionEnabled > 0.5 && pushC.detectionCount > 0) {
+        // First pass: collect keypoint positions
+        vec2 keypoints[17];
+        bool hasKeypoint[17];
+        vec4 keypointColors[17];
+        
+        // Initialize
+        for (int i = 0; i < 17; i++) {
+            hasKeypoint[i] = false;
+        }
+        
+        // Find keypoints (class_id >= 100)
+        for (uint i = 0; i < min(pushC.detectionCount, uint(detectionBuffer.detections.length())); i++) {
+            Detection det = detectionBuffer.detections[i];
+            
+            // Check if this is a keypoint (class_id >= 100)
+            if (det.class_id >= 100) {
+                int keypoint_id = det.class_id - 100;
+                if (keypoint_id >= 0 && keypoint_id < 17) {
+                    // Convert normalized bbox to screen coordinates
+                    vec2 boxCenter = det.bbox.xy + det.bbox.zw * 0.5;
+                    vec2 boxSize = det.bbox.zw;
+                    
+                    // Scale to output size
+                    boxCenter *= pushC.outputSize;
+                    boxSize *= pushC.outputSize;
+                    
+                    keypoints[keypoint_id] = boxCenter;
+                    hasKeypoint[keypoint_id] = true;
+                    keypointColors[keypoint_id] = det.color;
+                    
+                    // Draw keypoint as circle
+                    float radius = max(boxSize.x, boxSize.y) * 0.5;
+                    drawKeypoint(frag, boxCenter, radius, det.color, color);
+                }
+            }
+        }
+        
+        // Draw skeleton connections (COCO format)
+        // Face connections
+        if (hasKeypoint[0] && hasKeypoint[1]) drawSkeletonLine(frag, keypoints[0], keypoints[1], vec4(1.0, 0.0, 0.0, 1.0), color);
+        if (hasKeypoint[0] && hasKeypoint[2]) drawSkeletonLine(frag, keypoints[0], keypoints[2], vec4(1.0, 0.0, 0.0, 1.0), color);
+        if (hasKeypoint[1] && hasKeypoint[3]) drawSkeletonLine(frag, keypoints[1], keypoints[3], vec4(1.0, 0.0, 0.0, 1.0), color);
+        if (hasKeypoint[2] && hasKeypoint[4]) drawSkeletonLine(frag, keypoints[2], keypoints[4], vec4(1.0, 0.0, 0.0, 1.0), color);
+        
+        // Upper body
+        if (hasKeypoint[5] && hasKeypoint[6]) drawSkeletonLine(frag, keypoints[5], keypoints[6], vec4(0.0, 1.0, 0.0, 1.0), color);
+        if (hasKeypoint[5] && hasKeypoint[7]) drawSkeletonLine(frag, keypoints[5], keypoints[7], vec4(0.0, 1.0, 0.0, 1.0), color);
+        if (hasKeypoint[7] && hasKeypoint[9]) drawSkeletonLine(frag, keypoints[7], keypoints[9], vec4(0.0, 1.0, 0.0, 1.0), color);
+        if (hasKeypoint[6] && hasKeypoint[8]) drawSkeletonLine(frag, keypoints[6], keypoints[8], vec4(0.0, 1.0, 0.0, 1.0), color);
+        if (hasKeypoint[8] && hasKeypoint[10]) drawSkeletonLine(frag, keypoints[8], keypoints[10], vec4(0.0, 1.0, 0.0, 1.0), color);
+        
+        // Lower body
+        if (hasKeypoint[5] && hasKeypoint[11]) drawSkeletonLine(frag, keypoints[5], keypoints[11], vec4(0.0, 0.0, 1.0, 1.0), color);
+        if (hasKeypoint[6] && hasKeypoint[12]) drawSkeletonLine(frag, keypoints[6], keypoints[12], vec4(0.0, 0.0, 1.0, 1.0), color);
+        if (hasKeypoint[11] && hasKeypoint[13]) drawSkeletonLine(frag, keypoints[11], keypoints[13], vec4(0.0, 0.0, 1.0, 1.0), color);
+        if (hasKeypoint[13] && hasKeypoint[15]) drawSkeletonLine(frag, keypoints[13], keypoints[15], vec4(0.0, 0.0, 1.0, 1.0), color);
+        if (hasKeypoint[12] && hasKeypoint[14]) drawSkeletonLine(frag, keypoints[12], keypoints[14], vec4(0.0, 0.0, 1.0, 1.0), color);
+        if (hasKeypoint[14] && hasKeypoint[16]) drawSkeletonLine(frag, keypoints[14], keypoints[16], vec4(0.0, 0.0, 1.0, 1.0), color);
+    }
+
+    imageStore(outImage, pixel, color);
+}

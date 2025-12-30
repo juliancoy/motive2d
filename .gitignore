@@ -1,0 +1,26 @@
+.vscode
+libtinygltf.a
+main
+P1090533*
+LandReform# Built motive binaries - do not commit
+motive2d
+motive3d
+libengine.a
+*.o
+*.so
+*.rdc
+.vscode
+result.txt
+renderdoc*
+LandReform
+nv-codec*
+*__pycache__
+*.MP4
+*.json
+20251216_ClimateTechHolidayParty_blit.mp4
+encode
+*.h265
+*.h264
+models
+#motive large binary
+motive2d_yolo

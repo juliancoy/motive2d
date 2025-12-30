@@ -1,0 +1,110 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer ScrubberOutput {
+    uvec4 pixels[];
+};
+
+layout(push_constant) uniform ScrubberPush {
+    vec2 resolution;
+    float progress;
+    float isPlaying;
+} pushConstants;
+
+uvec4 packColor(vec3 color, float alpha)
+{
+    vec3 clamped = clamp(color, 0.0, 1.0);
+    uint r = uint(clamped.r * 255.0 + 0.5);
+    uint g = uint(clamped.g * 255.0 + 0.5);
+    uint b = uint(clamped.b * 255.0 + 0.5);
+    uint a = uint(clamp(alpha, 0.0, 1.0) * 255.0 + 0.5);
+    return uvec4(r, g, b, a);
+}
+
+bool pointInTriangle(vec2 point, vec2 a, vec2 b, vec2 c)
+{
+    vec2 v0 = c - a;
+    vec2 v1 = b - a;
+    vec2 v2 = point - a;
+    float dot00 = dot(v0, v0);
+    float dot01 = dot(v0, v1);
+    float dot02 = dot(v0, v2);
+    float dot11 = dot(v1, v1);
+    float dot12 = dot(v1, v2);
+    float denom = dot00 * dot11 - dot01 * dot01;
+    if (denom == 0.0)
+    {
+        return false;
+    }
+    float invDenom = 1.0 / denom;
+    float u = (dot11 * dot02 - dot01 * dot12) * invDenom;
+    float v = (dot00 * dot12 - dot01 * dot02) * invDenom;
+    return u >= 0.0 && v >= 0.0 && (u + v <= 1.0);
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= int(pushConstants.resolution.x) || coord.y >= int(pushConstants.resolution.y))
+    {
+        return;
+    }
+
+    float width = pushConstants.resolution.x;
+    float height = pushConstants.resolution.y;
+    vec2 uv = (vec2(coord) + vec2(0.5, 0.5)) / vec2(width, height);
+    vec3 color = vec3(0.04, 0.04, 0.07);
+
+    const float barTop = 0.62;
+    const float barBottom = 0.32;
+    const vec2 barRange = vec2(0.14, 0.94);
+
+    if (uv.x >= barRange.x && uv.x <= barRange.y && uv.y >= barBottom && uv.y <= barTop)
+    {
+        vec3 background = vec3(0.12, 0.12, 0.18);
+        vec3 filled = vec3(0.2, 0.7, 1.0);
+        color = background;
+        float progressWidth = mix(barRange.x, barRange.y, clamp(pushConstants.progress, 0.0, 1.0));
+        if (uv.x <= progressWidth)
+        {
+            color = mix(background, filled, 0.6);
+        }
+    }
+
+    vec2 buttonCenter = vec2(0.08, 0.5);
+    float buttonRadius = 0.15;
+    float buttonDist = distance(uv, buttonCenter);
+
+    if (buttonDist <= buttonRadius)
+    {
+        color = vec3(0.88, 0.88, 0.9);
+        vec2 local = uv - buttonCenter;
+        float barWidth = buttonRadius * 0.25;
+        float barHeight = buttonRadius * 0.65;
+        if (pushConstants.isPlaying > 0.5)
+        {
+            vec2 a = buttonCenter + vec2(-0.04, -0.05);
+            vec2 b = buttonCenter + vec2(-0.04, 0.05);
+            vec2 c = buttonCenter + vec2(0.04, 0.0);
+            if (pointInTriangle(uv, a, b, c))
+            {
+                color = vec3(0.08, 0.08, 0.1);
+            }
+        }
+        else
+        {
+            if (abs(local.x + 0.035) <= barWidth * 0.7 && abs(local.y) <= barHeight)
+            {
+                color = vec3(0.08, 0.08, 0.1);
+            }
+            if (abs(local.x - 0.035) <= barWidth * 0.7 && abs(local.y) <= barHeight)
+            {
+                color = vec3(0.08, 0.08, 0.1);
+            }
+        }
+    }
+
+    int index = coord.y * int(width) + coord.x;
+    pixels[index] = packColor(color, 1.0);
+}
