@@ -1,0 +1,21 @@
+[submodule "FFmpeg"]
+	path = FFmpeg
+	url = https://github.com/FFmpeg/FFmpeg.git
+[submodule "freetype"]
+	path = freetype
+	url = https://github.com/freetype/freetype.git
+[submodule "nv-codec-headers"]
+	path = nv-codec-headers
+	url = https://github.com/FFmpeg/nv-codec-headers.git
+[submodule "glfw"]
+	path = glfw
+	url = https://github.com/glfw/glfw.git
+[submodule "glm"]
+	path = glm
+	url = https://github.com/g-truc/glm.git
+[submodule "ncnn"]
+	path = ncnn
+	url = https://github.com/Tencent/ncnn.git
+[submodule "Vulkan-Headers"]
+	path = Vulkan-Headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git
