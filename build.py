@@ -47,7 +47,6 @@ vv_objects = [os.path.splitext(os.path.relpath(p, this_dir))[0] + ".o" for p in 
 include_paths = [
     os.path.join(vulkan_sdk_path, "include"),
     os.path.abspath(os.path.join(this_dir, "glfw/include")),
-    os.path.abspath(os.path.join(this_dir, "tinygltf")),
     os.path.abspath(os.path.join(this_dir, "glm")),
     os.path.join(ffmpeg_install_dir, "include"),
     os.path.abspath(os.path.join(this_dir, "freetype/include")),
@@ -60,6 +59,7 @@ include_paths = [
     os.path.abspath(os.path.join(this_dir, "ncnn/include")),
     os.path.abspath(os.path.join(this_dir, "ncnn/src")),
     os.path.abspath(os.path.join(this_dir, "ncnn/build/src")),
+    os.path.abspath(os.path.join(this_dir, "ncnn/build/install/include")),
 ]
 ffmpeg_lib_dir = os.path.join(ffmpeg_install_dir, "lib")
 lib_paths = [
@@ -69,11 +69,11 @@ lib_paths = [
     os.path.abspath(os.path.join(this_dir, "freetype/build")),
     os.path.abspath(os.path.join(this_dir, "ncnn/build/src")),
     os.path.abspath(os.path.join(this_dir, "ncnn/build/glslang/glslang")),
+    os.path.abspath(os.path.join(this_dir, "ncnn/build/install/lib")),
     os.path.abspath(os.path.join(this_dir, ".")),
 ]
 core_libraries = [
     "glfw3",
-    "tinygltf",
     "vulkan",
     "avformat",
     "avcodec",

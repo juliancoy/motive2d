@@ -1,5 +1,7 @@
 #include "overlay.hpp"
 
+#include <array>
+#include <algorithm>
 #include <cstring>
 #include <exception>
 #include <iostream>
@@ -80,6 +82,47 @@ void copyBufferToImage(Engine2D* engine,
 
     engine->endSingleTimeCommands(cmd);
 }
+
+bool ensureDetectionBuffer(Engine2D* engine, OverlayCompute& comp, VkDeviceSize requestedSize)
+{
+    const VkDeviceSize entrySize = sizeof(DetectionEntry);
+    VkDeviceSize requiredSize = std::max(entrySize, requestedSize);
+
+    if (comp.detectionBuffer != VK_NULL_HANDLE && comp.detectionBufferSize >= requiredSize)
+    {
+        return true;
+    }
+
+    if (comp.detectionBuffer != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(comp.device, comp.detectionBuffer, nullptr);
+        comp.detectionBuffer = VK_NULL_HANDLE;
+    }
+    if (comp.detectionBufferMemory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(comp.device, comp.detectionBufferMemory, nullptr);
+        comp.detectionBufferMemory = VK_NULL_HANDLE;
+    }
+
+    engine->createBuffer(requiredSize,
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         comp.detectionBuffer,
+                         comp.detectionBufferMemory);
+    comp.detectionBufferSize = requiredSize;
+    return true;
+}
+
+struct OverlayPush
+{
+    glm::vec2 outputSize;
+    glm::vec2 rectCenter;
+    glm::vec2 rectSize;
+    float outerThickness;
+    float innerThickness;
+    float detectionEnabled;
+    uint32_t detectionCount;
+};
 } // namespace
 
 void destroyOverlayCompute(OverlayCompute& comp)
@@ -114,6 +157,17 @@ void destroyOverlayCompute(OverlayCompute& comp)
         vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
         comp.descriptorSetLayout = VK_NULL_HANDLE;
     }
+    if (comp.detectionBuffer != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(comp.device, comp.detectionBuffer, nullptr);
+        comp.detectionBuffer = VK_NULL_HANDLE;
+    }
+    if (comp.detectionBufferMemory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(comp.device, comp.detectionBufferMemory, nullptr);
+        comp.detectionBufferMemory = VK_NULL_HANDLE;
+    }
+    comp.detectionBufferSize = 0;
 }
 
 void destroyImageResource(Engine2D* engine, ImageResource& res)
@@ -273,8 +327,8 @@ void runOverlayCompute(Engine2D* engine,
                        float outerThickness,
                        float innerThickness,
                        float detectionEnabled,
-                       const glm::vec2& detectionBoxCenter,
-                       const glm::vec2& detectionBoxSize)
+                       const DetectionEntry* detections,
+                       uint32_t detectionCount)
 {
     bool recreated = false;
     if (!ensureImageResource(engine, target, width, height, VK_FORMAT_R8G8B8A8_UNORM, recreated,
@@ -290,14 +344,63 @@ void runOverlayCompute(Engine2D* engine,
     storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     storageInfo.imageView = target.view;
 
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = comp.descriptorSet;
-    write.dstBinding = 0;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    write.descriptorCount = 1;
-    write.pImageInfo = &storageInfo;
-    vkUpdateDescriptorSets(comp.device, 1, &write, 0, nullptr);
+    const VkDeviceSize entrySize = sizeof(DetectionEntry);
+    VkDeviceSize desiredBufferSize = entrySize;
+    if (detectionCount > 0)
+    {
+        desiredBufferSize = entrySize * static_cast<VkDeviceSize>(detectionCount);
+    }
+    if (!ensureDetectionBuffer(engine, comp, desiredBufferSize))
+    {
+        return;
+    }
+
+    VkDeviceSize copySize = std::max(entrySize, desiredBufferSize);
+    if (comp.detectionBuffer != VK_NULL_HANDLE && comp.detectionBufferMemory != VK_NULL_HANDLE)
+    {
+        void* mapped = nullptr;
+        vkMapMemory(comp.device, comp.detectionBufferMemory, 0, copySize, 0, &mapped);
+        if (mapped)
+        {
+            if (detectionCount > 0 && detections)
+            {
+                std::memcpy(mapped, detections, entrySize * detectionCount);
+            }
+            else
+            {
+                std::memset(mapped, 0, static_cast<size_t>(entrySize));
+            }
+            vkUnmapMemory(comp.device, comp.detectionBufferMemory);
+        }
+    }
+
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = comp.detectionBuffer;
+    bufferInfo.offset = 0;
+    bufferInfo.range = copySize;
+
+    VkWriteDescriptorSet imageWrite{};
+    imageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    imageWrite.dstSet = comp.descriptorSet;
+    imageWrite.dstBinding = 0;
+    imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    imageWrite.descriptorCount = 1;
+    imageWrite.pImageInfo = &storageInfo;
+
+    VkWriteDescriptorSet bufferWrite{};
+    bufferWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    bufferWrite.dstSet = comp.descriptorSet;
+    bufferWrite.dstBinding = 1;
+    bufferWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bufferWrite.descriptorCount = 1;
+    bufferWrite.pBufferInfo = &bufferInfo;
+
+    std::array<VkWriteDescriptorSet, 2> writes = {imageWrite, bufferWrite};
+    vkUpdateDescriptorSets(comp.device,
+                           static_cast<uint32_t>(writes.size()),
+                           writes.data(),
+                           0,
+                           nullptr);
 
     vkResetCommandBuffer(comp.commandBuffer, 0);
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -311,10 +414,14 @@ void runOverlayCompute(Engine2D* engine,
         float outerThickness;
         float innerThickness;
         float detectionEnabled;
-        glm::vec2 detectionBoxCenter;
-        glm::vec2 detectionBoxSize;
-    } push{glm::vec2(static_cast<float>(width), static_cast<float>(height)), rectCenter, rectSize, outerThickness, innerThickness,
-           detectionEnabled, detectionBoxCenter, detectionBoxSize};
+        uint32_t detectionCount;
+    } push{glm::vec2(static_cast<float>(width), static_cast<float>(height)),
+           rectCenter,
+           rectSize,
+           outerThickness,
+           innerThickness,
+           detectionEnabled,
+           detectionCount};
 
     const VkImageLayout initialLayout = recreated ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkImageMemoryBarrier toGeneralBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -398,15 +505,20 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
     comp.device = engine->logicalDevice;
     comp.queue = engine->graphicsQueue;
 
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    layoutInfo.bindingCount = 1;
-    layoutInfo.pBindings = &binding;
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(comp.device, &layoutInfo, nullptr, &comp.descriptorSetLayout) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create overlay descriptor set layout" << std::endl;
@@ -416,7 +528,7 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
     std::vector<char> shaderCode;
     try
     {
-        shaderCode = readSPIRVFile("shaders/overlay_rect.comp.spv");
+    shaderCode = readSPIRVFile("shaders/overlay_pose.comp.spv");
     }
     catch (const std::exception& ex)
     {
@@ -430,7 +542,7 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pushRange.offset = 0;
-    pushRange.size = sizeof(glm::vec2) * 5 + sizeof(float) * 3; // outputSize, rectCenter, rectSize, detectionBoxCenter, detectionBoxSize (5 vec2) + outerThickness, innerThickness, detectionEnabled (3 float)
+    pushRange.size = sizeof(OverlayPush);
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipelineLayoutInfo.setLayoutCount = 1;
@@ -465,14 +577,16 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
 
     vkDestroyShaderModule(comp.device, shaderModule, nullptr);
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSize.descriptorCount = 1;
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[0].descriptorCount = 1;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSizes[1].descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     poolInfo.maxSets = 1;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
 
     if (vkCreateDescriptorPool(comp.device, &poolInfo, nullptr, &comp.descriptorPool) != VK_SUCCESS)
     {

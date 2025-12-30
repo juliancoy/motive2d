@@ -210,19 +210,31 @@ def setup_glfw():
 
     print("GLFW built locally in glfw/build")
 
-def setup_tinygltf():
-    ensure_exists_or_exit("tinygltf")
-
-    obj_file = Path("tinygltf/tiny_gltf.o")
-    if not obj_file.exists():
-        print("Building tinygltf...")
-        run_command("g++ -c -std=c++11 -fPIC tinygltf/tiny_gltf.cc -o tinygltf/tiny_gltf.o")
-        run_command("ar rcs libtinygltf.a tinygltf/tiny_gltf.o")
-        print("tinygltf built as static library")
-
 def setup_glm():
     ensure_exists_or_exit("glm")
     print("GLM found (header-only library, no build required)")
+
+def setup_ncnn():
+    ensure_exists_or_exit("ncnn")
+    build_dir = Path("ncnn/build")
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Configuring ncnn...")
+    cmake_flags = [
+        "-DNCNN_BUILD_EXAMPLES=OFF",
+        "-DNCNN_BUILD_BENCHMARKS=OFF",
+        "-DNCNN_BUILD_TESTS=OFF",
+        "-DNCNN_VULKAN=OFF",
+        "-DNCNN_OPENMP=OFF",
+        "-DCMAKE_BUILD_TYPE=Release",
+    ]
+    cmake_cmd = "cmake .. " + " ".join(cmake_flags)
+    run_command(cmake_cmd, cwd=build_dir)
+
+    print("Building ncnn...")
+    run_command(f"make -j{os.cpu_count()}", cwd=build_dir)
+
+    print("ncnn built locally in ncnn/build")
 
 def setup_ffnvcodec():
     install_dir = Path("/usr/include/ffnvcodec")
@@ -470,8 +482,8 @@ def main():
     print("=== Checking and setting up development dependencies ===")
     setup_vulkan_headers()
     setup_glfw()
-    setup_tinygltf()
     setup_glm()
+    setup_ncnn()
     setup_ffnvcodec()
     setup_ffmpeg()
     setup_freetype()

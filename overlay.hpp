@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <vulkan/vulkan.h>
 #include <glm/vec2.hpp>
+#include <glm/vec4.hpp>
 
 #include "display2d.h"
 
@@ -37,6 +38,15 @@ struct FpsOverlayResources
     uint32_t lastRefHeight = 0;
 };
 
+struct DetectionEntry
+{
+    glm::vec4 bbox;      // normalized x, y, width, height
+    glm::vec4 color;
+    float confidence;
+    int classId;
+    int padding[2];
+};
+
 struct OverlayCompute
 {
     VkDevice device = VK_NULL_HANDLE;
@@ -51,6 +61,9 @@ struct OverlayCompute
     VkFence fence = VK_NULL_HANDLE;
     uint32_t width = 0;
     uint32_t height = 0;
+    VkBuffer detectionBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory detectionBufferMemory = VK_NULL_HANDLE;
+    VkDeviceSize detectionBufferSize = 0;
 };
 
 bool ensureImageResource(Engine2D* engine,
@@ -84,8 +97,8 @@ void runOverlayCompute(Engine2D* engine,
                        float outerThickness,
                        float innerThickness,
                        float detectionEnabled,
-                       const glm::vec2& detectionBoxCenter,
-                       const glm::vec2& detectionBoxSize);
+                       const DetectionEntry* detections,
+                       uint32_t detectionCount);
 
 void updateFpsOverlay(Engine2D* engine,
                       FpsOverlayResources& fpsOverlay,
