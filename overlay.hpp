@@ -47,7 +47,7 @@ struct DetectionEntry
     int padding[2];
 };
 
-struct OverlayCompute
+struct RectOverlayCompute
 {
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
@@ -59,11 +59,23 @@ struct OverlayCompute
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
-    uint32_t width = 0;
-    uint32_t height = 0;
+};
+
+struct PoseOverlayCompute
+{
+    VkDevice device = VK_NULL_HANDLE;
+    VkQueue queue = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkDeviceSize detectionBufferSize = 0;
     VkBuffer detectionBuffer = VK_NULL_HANDLE;
     VkDeviceMemory detectionBufferMemory = VK_NULL_HANDLE;
-    VkDeviceSize detectionBufferSize = 0;
 };
 
 bool ensureImageResource(Engine2D* engine,
@@ -84,21 +96,37 @@ bool uploadImageData(Engine2D* engine,
                      uint32_t height,
                      VkFormat format);
 
-bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp);
-void destroyOverlayCompute(OverlayCompute& comp);
+bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp);
+void destroyRectOverlayCompute(RectOverlayCompute& comp);
 
-void runOverlayCompute(Engine2D* engine,
-                       OverlayCompute& comp,
-                       ImageResource& target,
-                       uint32_t width,
-                       uint32_t height,
-                       const glm::vec2& rectCenter,
-                       const glm::vec2& rectSize,
-                       float outerThickness,
-                       float innerThickness,
-                       float detectionEnabled,
-                       const DetectionEntry* detections,
-                       uint32_t detectionCount);
+bool initializePoseOverlayCompute(Engine2D* engine, PoseOverlayCompute& comp);
+void destroyPoseOverlayCompute(PoseOverlayCompute& comp);
+
+void runRectOverlayCompute(Engine2D* engine,
+                           RectOverlayCompute& comp,
+                           const ImageResource& poseSource,
+                           ImageResource& target,
+                           uint32_t width,
+                           uint32_t height,
+                           const glm::vec2& rectCenter,
+                           const glm::vec2& rectSize,
+                           float outerThickness,
+                           float innerThickness,
+                           float detectionEnabled,
+                           float overlayActive);
+
+void runPoseOverlayCompute(Engine2D* engine,
+                           PoseOverlayCompute& comp,
+                           ImageResource& target,
+                           uint32_t width,
+                           uint32_t height,
+                           const glm::vec2& rectCenter,
+                           const glm::vec2& rectSize,
+                           float outerThickness,
+                           float innerThickness,
+                           float detectionEnabled,
+                           const DetectionEntry* detections,
+                           uint32_t detectionCount);
 
 void updateFpsOverlay(Engine2D* engine,
                       FpsOverlayResources& fpsOverlay,

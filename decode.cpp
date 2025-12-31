@@ -496,6 +496,7 @@ bool initializeVideoPlayback(const std::filesystem::path &videoPath,
                   << (state.decoder.swapChromaUV ? "ON" : "OFF") << std::endl;
     }
 
+    state.stagingFrame = video::DecodedFrame{};
     state.stagingFrame.buffer.reserve(static_cast<size_t>(state.decoder.bufferSize));
     state.pendingFrames.clear();
     state.playbackClockInitialized = false;

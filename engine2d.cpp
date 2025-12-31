@@ -23,31 +23,34 @@ Engine2D::~Engine2D()
     shutdown();
 }
 
-bool Engine2D::initialize()
+bool Engine2D::initialize(bool requireWindow)
 {
     if (initialized)
     {
         return true;
     }
 
-    if (!glfwInit())
+    if (requireWindow)
     {
-        std::cerr << "[Engine2D] Failed to initialize GLFW.\n";
-        return false;
-    }
-    glfwInitialized = true;
+        if (!glfwInit())
+        {
+            std::cerr << "[Engine2D] Failed to initialize GLFW.\n";
+            return false;
+        }
+        glfwInitialized = true;
 
-    if (!glfwVulkanSupported())
-    {
-        std::cerr << "[Engine2D] GLFW reports Vulkan support is unavailable.\n";
-        glfwTerminate();
-        glfwInitialized = false;
-        return false;
+        if (!glfwVulkanSupported())
+        {
+            std::cerr << "[Engine2D] GLFW reports Vulkan support is unavailable.\n";
+            glfwTerminate();
+            glfwInitialized = false;
+            return false;
+        }
     }
 
     try
     {
-        renderDevice.initialize();
+        renderDevice.initialize(requireWindow);
     }
     catch (const std::exception& ex)
     {
@@ -208,8 +211,14 @@ bool Engine2D::initializeOverlay()
         return true;
     }
 
-    if (!overlay::initializeOverlayCompute(this, overlayCompute))
+    if (!overlay::initializeRectOverlayCompute(this, rectOverlayCompute))
     {
+        return false;
+    }
+
+    if (!overlay::initializePoseOverlayCompute(this, poseOverlayCompute))
+    {
+        overlay::destroyRectOverlayCompute(rectOverlayCompute);
         return false;
     }
 
@@ -358,7 +367,8 @@ void Engine2D::shutdown()
 
     if (overlayInitialized)
     {
-        overlay::destroyOverlayCompute(overlayCompute);
+        overlay::destroyPoseOverlayCompute(poseOverlayCompute);
+        overlay::destroyRectOverlayCompute(rectOverlayCompute);
         overlayInitialized = false;
     }
 
@@ -369,6 +379,7 @@ void Engine2D::shutdown()
         overlay::destroyImageResource(this, playbackState.video.lumaImage);
         overlay::destroyImageResource(this, playbackState.video.chromaImage);
         overlay::destroyImageResource(this, playbackState.overlay.image);
+        overlay::destroyImageResource(this, playbackState.poseOverlayImage);
         overlay::destroyImageResource(this, playbackState.fpsOverlay.image);
 
         if (playbackState.video.sampler != VK_NULL_HANDLE)
@@ -469,9 +480,14 @@ VideoPlaybackState& Engine2D::getPlaybackState()
     return playbackState;
 }
 
-overlay::OverlayCompute& Engine2D::getOverlayCompute()
+overlay::RectOverlayCompute& Engine2D::getRectOverlayCompute()
 {
-    return overlayCompute;
+    return rectOverlayCompute;
+}
+
+overlay::PoseOverlayCompute& Engine2D::getPoseOverlayCompute()
+{
+    return poseOverlayCompute;
 }
 
 void Engine2D::refreshFpsOverlay()

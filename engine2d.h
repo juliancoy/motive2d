@@ -51,7 +51,8 @@ public:
     Engine2D& operator=(const Engine2D&) = delete;
 
     // Initialize the engine (Vulkan, GLFW, etc.)
-    bool initialize();
+    // `requireWindow` controls whether GLFW initialization is performed.
+    bool initialize(bool requireWindow = true);
 
     // Create a 2D display window
     Display2D* createWindow(int width = 1280, int height = 720, 
@@ -92,7 +93,8 @@ public:
     void refreshFpsOverlay();
 
     VideoPlaybackState& getPlaybackState();
-    overlay::OverlayCompute& getOverlayCompute();
+    overlay::RectOverlayCompute& getRectOverlayCompute();
+    overlay::PoseOverlayCompute& getPoseOverlayCompute();
 
     // Main loop (blocks until all windows closed)
     void run();
@@ -134,7 +136,8 @@ public:
     std::optional<CropRegion> cropRegion;
     
     // Overlay resources
-    overlay::OverlayCompute overlayCompute;
+    overlay::RectOverlayCompute rectOverlayCompute;
+    overlay::PoseOverlayCompute poseOverlayCompute;
     bool overlayInitialized = false;
     
     // FPS tracking

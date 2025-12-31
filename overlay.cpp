@@ -83,7 +83,7 @@ void copyBufferToImage(Engine2D* engine,
     engine->endSingleTimeCommands(cmd);
 }
 
-bool ensureDetectionBuffer(Engine2D* engine, OverlayCompute& comp, VkDeviceSize requestedSize)
+bool ensureDetectionBuffer(Engine2D* engine, PoseOverlayCompute& comp, VkDeviceSize requestedSize)
 {
     const VkDeviceSize entrySize = sizeof(DetectionEntry);
     VkDeviceSize requiredSize = std::max(entrySize, requestedSize);
@@ -113,7 +113,7 @@ bool ensureDetectionBuffer(Engine2D* engine, OverlayCompute& comp, VkDeviceSize 
     return true;
 }
 
-struct OverlayPush
+struct PoseOverlayPush
 {
     glm::vec2 outputSize;
     glm::vec2 rectCenter;
@@ -123,9 +123,54 @@ struct OverlayPush
     float detectionEnabled;
     uint32_t detectionCount;
 };
+
+struct RectOverlayPush
+{
+    glm::vec2 outputSize;
+    glm::vec2 rectCenter;
+    glm::vec2 rectSize;
+    float outerThickness;
+    float innerThickness;
+    float detectionEnabled;
+    float overlayActive;
+};
 } // namespace
 
-void destroyOverlayCompute(OverlayCompute& comp)
+void destroyRectOverlayCompute(RectOverlayCompute& comp)
+{
+    if (comp.fence != VK_NULL_HANDLE)
+    {
+        vkDestroyFence(comp.device, comp.fence, nullptr);
+        comp.fence = VK_NULL_HANDLE;
+    }
+    if (comp.commandPool != VK_NULL_HANDLE)
+    {
+        vkDestroyCommandPool(comp.device, comp.commandPool, nullptr);
+        comp.commandPool = VK_NULL_HANDLE;
+    }
+    if (comp.descriptorPool != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorPool(comp.device, comp.descriptorPool, nullptr);
+        comp.descriptorPool = VK_NULL_HANDLE;
+    }
+    if (comp.pipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(comp.device, comp.pipeline, nullptr);
+        comp.pipeline = VK_NULL_HANDLE;
+    }
+    if (comp.pipelineLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineLayout(comp.device, comp.pipelineLayout, nullptr);
+        comp.pipelineLayout = VK_NULL_HANDLE;
+    }
+    if (comp.descriptorSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
+        comp.descriptorSetLayout = VK_NULL_HANDLE;
+    }
+}
+
+void destroyPoseOverlayCompute(PoseOverlayCompute& comp)
 {
     if (comp.fence != VK_NULL_HANDLE)
     {
@@ -317,18 +362,18 @@ bool uploadImageData(Engine2D* engine,
     return true;
 }
 
-void runOverlayCompute(Engine2D* engine,
-                       OverlayCompute& comp,
-                       ImageResource& target,
-                       uint32_t width,
-                       uint32_t height,
-                       const glm::vec2& rectCenter,
-                       const glm::vec2& rectSize,
-                       float outerThickness,
-                       float innerThickness,
-                       float detectionEnabled,
-                       const DetectionEntry* detections,
-                       uint32_t detectionCount)
+void runPoseOverlayCompute(Engine2D* engine,
+                           PoseOverlayCompute& comp,
+                           ImageResource& target,
+                           uint32_t width,
+                           uint32_t height,
+                           const glm::vec2& rectCenter,
+                           const glm::vec2& rectSize,
+                           float outerThickness,
+                           float innerThickness,
+                           float detectionEnabled,
+                           const DetectionEntry* detections,
+                           uint32_t detectionCount)
 {
     bool recreated = false;
     if (!ensureImageResource(engine, target, width, height, VK_FORMAT_R8G8B8A8_UNORM, recreated,
@@ -336,9 +381,6 @@ void runOverlayCompute(Engine2D* engine,
     {
         return;
     }
-
-    comp.width = width;
-    comp.height = height;
 
     VkDescriptorImageInfo storageInfo{};
     storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -407,21 +449,13 @@ void runOverlayCompute(Engine2D* engine,
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(comp.commandBuffer, &beginInfo);
 
-    struct OverlayPush {
-        glm::vec2 outputSize;
-        glm::vec2 rectCenter;
-        glm::vec2 rectSize;
-        float outerThickness;
-        float innerThickness;
-        float detectionEnabled;
-        uint32_t detectionCount;
-    } push{glm::vec2(static_cast<float>(width), static_cast<float>(height)),
-           rectCenter,
-           rectSize,
-           outerThickness,
-           innerThickness,
-           detectionEnabled,
-           detectionCount};
+    PoseOverlayPush push{glm::vec2(static_cast<float>(width), static_cast<float>(height)),
+                         rectCenter,
+                         rectSize,
+                         outerThickness,
+                         innerThickness,
+                         detectionEnabled,
+                         detectionCount};
 
     const VkImageLayout initialLayout = recreated ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     VkImageMemoryBarrier toGeneralBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -465,7 +499,7 @@ void runOverlayCompute(Engine2D* engine,
                        comp.pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT,
                        0,
-                       sizeof(OverlayPush),
+                       sizeof(PoseOverlayPush),
                        &push);
 
     const uint32_t groupX = (width + 15) / 16;
@@ -500,7 +534,286 @@ void runOverlayCompute(Engine2D* engine,
     vkWaitForFences(comp.device, 1, &comp.fence, VK_TRUE, UINT64_MAX);
 }
 
-bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
+void runRectOverlayCompute(Engine2D* engine,
+                           RectOverlayCompute& comp,
+                           const ImageResource& poseSource,
+                           ImageResource& target,
+                           uint32_t width,
+                           uint32_t height,
+                           const glm::vec2& rectCenter,
+                           const glm::vec2& rectSize,
+                           float outerThickness,
+                           float innerThickness,
+                           float detectionEnabled,
+                           float overlayActive)
+{
+    bool recreated = false;
+    if (!ensureImageResource(engine, target, width, height, VK_FORMAT_R8G8B8A8_UNORM, recreated,
+                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+    {
+        return;
+    }
+
+    vkResetCommandBuffer(comp.commandBuffer, 0);
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(comp.commandBuffer, &beginInfo);
+
+    RectOverlayPush push{glm::vec2(static_cast<float>(width), static_cast<float>(height)),
+                         rectCenter,
+                         rectSize,
+                         outerThickness,
+                         innerThickness,
+                         detectionEnabled,
+                         overlayActive};
+
+    VkDescriptorImageInfo poseInfo{};
+    poseInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    poseInfo.imageView = poseSource.view;
+
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    imageInfo.imageView = target.view;
+
+    VkWriteDescriptorSet poseWrite{};
+    poseWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    poseWrite.dstSet = comp.descriptorSet;
+    poseWrite.dstBinding = 0;
+    poseWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poseWrite.descriptorCount = 1;
+    poseWrite.pImageInfo = &poseInfo;
+
+    VkWriteDescriptorSet imageWrite{};
+    imageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    imageWrite.dstSet = comp.descriptorSet;
+    imageWrite.dstBinding = 1;
+    imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    imageWrite.descriptorCount = 1;
+    imageWrite.pImageInfo = &imageInfo;
+
+    std::array<VkWriteDescriptorSet, 2> writes = {poseWrite, imageWrite};
+    vkUpdateDescriptorSets(comp.device,
+                           static_cast<uint32_t>(writes.size()),
+                           writes.data(),
+                           0,
+                           nullptr);
+
+    const VkImageLayout initialLayout = recreated ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkImageMemoryBarrier toGeneralBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toGeneralBarrier.oldLayout = initialLayout;
+    toGeneralBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toGeneralBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toGeneralBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toGeneralBarrier.image = target.image;
+    toGeneralBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toGeneralBarrier.subresourceRange.baseMipLevel = 0;
+    toGeneralBarrier.subresourceRange.levelCount = 1;
+    toGeneralBarrier.subresourceRange.baseArrayLayer = 0;
+    toGeneralBarrier.subresourceRange.layerCount = 1;
+    toGeneralBarrier.srcAccessMask = (initialLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                                         ? VK_ACCESS_SHADER_READ_BIT
+                                         : 0;
+    toGeneralBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+    VkPipelineStageFlags srcStage = (initialLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                                        ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                                        : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+
+    vkCmdPipelineBarrier(comp.commandBuffer,
+                         srcStage,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &toGeneralBarrier);
+
+    vkCmdBindPipeline(comp.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, comp.pipeline);
+    vkCmdBindDescriptorSets(comp.commandBuffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            comp.pipelineLayout,
+                            0,
+                            1,
+                            &comp.descriptorSet,
+                            0,
+                            nullptr);
+    vkCmdPushConstants(comp.commandBuffer,
+                       comp.pipelineLayout,
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       sizeof(RectOverlayPush),
+                       &push);
+
+    const uint32_t groupX = (width + 15) / 16;
+    const uint32_t groupY = (height + 15) / 16;
+    vkCmdDispatch(comp.commandBuffer, groupX, groupY, 1);
+
+    VkImageMemoryBarrier toReadBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toReadBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    toReadBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    toReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toReadBarrier.image = target.image;
+    toReadBarrier.subresourceRange = toGeneralBarrier.subresourceRange;
+    toReadBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    toReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+    vkCmdPipelineBarrier(comp.commandBuffer,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &toReadBarrier);
+
+    vkEndCommandBuffer(comp.commandBuffer);
+
+    vkResetFences(comp.device, 1, &comp.fence);
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &comp.commandBuffer;
+    vkQueueSubmit(engine->graphicsQueue, 1, &submitInfo, comp.fence);
+    vkWaitForFences(comp.device, 1, &comp.fence, VK_TRUE, UINT64_MAX);
+}
+
+bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
+{
+    comp.device = engine->logicalDevice;
+    comp.queue = engine->graphicsQueue;
+
+    VkDescriptorSetLayoutBinding bindings[2]{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
+    if (vkCreateDescriptorSetLayout(comp.device, &layoutInfo, nullptr, &comp.descriptorSetLayout) != VK_SUCCESS)
+    {
+        std::cerr << "[Video2D] Failed to create rect overlay descriptor set layout" << std::endl;
+        return false;
+    }
+
+    std::vector<char> shaderCode;
+    try
+    {
+        shaderCode = readSPIRVFile("shaders/overlay_rect.comp.spv");
+    }
+    catch (const std::exception& ex)
+    {
+        std::cerr << "[Video2D] " << ex.what() << std::endl;
+        destroyRectOverlayCompute(comp);
+        return false;
+    }
+
+    VkShaderModule shaderModule = engine->createShaderModule(shaderCode);
+
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(RectOverlayPush);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &comp.descriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+
+    if (vkCreatePipelineLayout(comp.device, &pipelineLayoutInfo, nullptr, &comp.pipelineLayout) != VK_SUCCESS)
+    {
+        std::cerr << "[Video2D] Failed to create rect overlay pipeline layout" << std::endl;
+        vkDestroyShaderModule(comp.device, shaderModule, nullptr);
+        destroyRectOverlayCompute(comp);
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stageInfo.module = shaderModule;
+    stageInfo.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    pipelineInfo.stage = stageInfo;
+    pipelineInfo.layout = comp.pipelineLayout;
+
+    if (vkCreateComputePipelines(comp.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &comp.pipeline) != VK_SUCCESS)
+    {
+        std::cerr << "[Video2D] Failed to create rect overlay compute pipeline" << std::endl;
+        vkDestroyShaderModule(comp.device, shaderModule, nullptr);
+        destroyRectOverlayCompute(comp);
+        return false;
+    }
+
+    vkDestroyShaderModule(comp.device, shaderModule, nullptr);
+
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[0].descriptorCount = 1;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[1].descriptorCount = 1;
+
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.maxSets = 1;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
+
+    if (vkCreateDescriptorPool(comp.device, &poolInfo, nullptr, &comp.descriptorPool) != VK_SUCCESS)
+    {
+        std::cerr << "[Video2D] Failed to create rect overlay descriptor pool" << std::endl;
+        destroyRectOverlayCompute(comp);
+        return false;
+    }
+
+    VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocInfo.descriptorPool = comp.descriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &comp.descriptorSetLayout;
+
+    if (vkAllocateDescriptorSets(comp.device, &allocInfo, &comp.descriptorSet) != VK_SUCCESS)
+    {
+        std::cerr << "[Video2D] Failed to allocate rect overlay descriptor set" << std::endl;
+        destroyRectOverlayCompute(comp);
+        return false;
+    }
+
+    VkCommandPoolCreateInfo poolCreateInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    poolCreateInfo.queueFamilyIndex = engine->graphicsQueueFamilyIndex;
+    poolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    if (vkCreateCommandPool(comp.device, &poolCreateInfo, nullptr, &comp.commandPool) != VK_SUCCESS)
+    {
+        std::cerr << "[Video2D] Failed to create rect overlay command pool" << std::endl;
+        destroyRectOverlayCompute(comp);
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo cmdAllocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmdAllocInfo.commandPool = comp.commandPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(comp.device, &cmdAllocInfo, &comp.commandBuffer) != VK_SUCCESS)
+    {
+        std::cerr << "[Video2D] Failed to allocate rect overlay command buffer" << std::endl;
+        destroyRectOverlayCompute(comp);
+        return false;
+    }
+
+    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkCreateFence(comp.device, &fenceInfo, nullptr, &comp.fence) != VK_SUCCESS)
+    {
+        std::cerr << "[Video2D] Failed to create rect overlay fence" << std::endl;
+        destroyRectOverlayCompute(comp);
+        return false;
+    }
+
+    return true;
+}
+
+bool initializePoseOverlayCompute(Engine2D* engine, PoseOverlayCompute& comp)
 {
     comp.device = engine->logicalDevice;
     comp.queue = engine->graphicsQueue;
@@ -521,19 +834,19 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
     layoutInfo.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(comp.device, &layoutInfo, nullptr, &comp.descriptorSetLayout) != VK_SUCCESS)
     {
-        std::cerr << "[Video2D] Failed to create overlay descriptor set layout" << std::endl;
+        std::cerr << "[Video2D] Failed to create pose overlay descriptor set layout" << std::endl;
         return false;
     }
 
     std::vector<char> shaderCode;
     try
     {
-    shaderCode = readSPIRVFile("shaders/overlay_pose.comp.spv");
+        shaderCode = readSPIRVFile("shaders/overlay_pose.comp.spv");
     }
     catch (const std::exception& ex)
     {
         std::cerr << "[Video2D] " << ex.what() << std::endl;
-        destroyOverlayCompute(comp);
+        destroyPoseOverlayCompute(comp);
         return false;
     }
 
@@ -542,7 +855,7 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pushRange.offset = 0;
-    pushRange.size = sizeof(OverlayPush);
+    pushRange.size = sizeof(PoseOverlayPush);
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipelineLayoutInfo.setLayoutCount = 1;
@@ -552,9 +865,9 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
 
     if (vkCreatePipelineLayout(comp.device, &pipelineLayoutInfo, nullptr, &comp.pipelineLayout) != VK_SUCCESS)
     {
-        std::cerr << "[Video2D] Failed to create overlay pipeline layout" << std::endl;
+        std::cerr << "[Video2D] Failed to create pose overlay pipeline layout" << std::endl;
         vkDestroyShaderModule(comp.device, shaderModule, nullptr);
-        destroyOverlayCompute(comp);
+        destroyPoseOverlayCompute(comp);
         return false;
     }
 
@@ -569,9 +882,9 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
 
     if (vkCreateComputePipelines(comp.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &comp.pipeline) != VK_SUCCESS)
     {
-        std::cerr << "[Video2D] Failed to create overlay compute pipeline" << std::endl;
+        std::cerr << "[Video2D] Failed to create pose overlay compute pipeline" << std::endl;
         vkDestroyShaderModule(comp.device, shaderModule, nullptr);
-        destroyOverlayCompute(comp);
+        destroyPoseOverlayCompute(comp);
         return false;
     }
 
@@ -590,8 +903,8 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
 
     if (vkCreateDescriptorPool(comp.device, &poolInfo, nullptr, &comp.descriptorPool) != VK_SUCCESS)
     {
-        std::cerr << "[Video2D] Failed to create overlay descriptor pool" << std::endl;
-        destroyOverlayCompute(comp);
+        std::cerr << "[Video2D] Failed to create pose overlay descriptor pool" << std::endl;
+        destroyPoseOverlayCompute(comp);
         return false;
     }
 
@@ -602,8 +915,8 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
 
     if (vkAllocateDescriptorSets(comp.device, &allocInfo, &comp.descriptorSet) != VK_SUCCESS)
     {
-        std::cerr << "[Video2D] Failed to allocate overlay descriptor set" << std::endl;
-        destroyOverlayCompute(comp);
+        std::cerr << "[Video2D] Failed to allocate pose overlay descriptor set" << std::endl;
+        destroyPoseOverlayCompute(comp);
         return false;
     }
 
@@ -612,8 +925,8 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
     poolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     if (vkCreateCommandPool(comp.device, &poolCreateInfo, nullptr, &comp.commandPool) != VK_SUCCESS)
     {
-        std::cerr << "[Video2D] Failed to create overlay command pool" << std::endl;
-        destroyOverlayCompute(comp);
+        std::cerr << "[Video2D] Failed to create pose overlay command pool" << std::endl;
+        destroyPoseOverlayCompute(comp);
         return false;
     }
 
@@ -623,16 +936,16 @@ bool initializeOverlayCompute(Engine2D* engine, OverlayCompute& comp)
     cmdAllocInfo.commandBufferCount = 1;
     if (vkAllocateCommandBuffers(comp.device, &cmdAllocInfo, &comp.commandBuffer) != VK_SUCCESS)
     {
-        std::cerr << "[Video2D] Failed to allocate overlay command buffer" << std::endl;
-        destroyOverlayCompute(comp);
+        std::cerr << "[Video2D] Failed to allocate pose overlay command buffer" << std::endl;
+        destroyPoseOverlayCompute(comp);
         return false;
     }
 
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     if (vkCreateFence(comp.device, &fenceInfo, nullptr, &comp.fence) != VK_SUCCESS)
     {
-        std::cerr << "[Video2D] Failed to create overlay fence" << std::endl;
-        destroyOverlayCompute(comp);
+        std::cerr << "[Video2D] Failed to create pose overlay fence" << std::endl;
+        destroyPoseOverlayCompute(comp);
         return false;
     }
 

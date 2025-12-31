@@ -67,7 +67,8 @@ RenderDevice::RenderDevice()
       primitiveDescriptorSetLayout(VK_NULL_HANDLE),
       descriptorPool(VK_NULL_HANDLE),
       commandPool(VK_NULL_HANDLE),
-      debugMessenger(VK_NULL_HANDLE)
+      debugMessenger(VK_NULL_HANDLE),
+      useGlfwExtensions(true)
 {
     props = {};
     features = {};
@@ -79,8 +80,9 @@ RenderDevice::~RenderDevice()
     shutdown();
 }
 
-void RenderDevice::initialize()
+void RenderDevice::initialize(bool requireWindowExtensions)
 {
+    useGlfwExtensions = requireWindowExtensions;
     createInstance();
     setupDebugMessenger();
     pickPhysicalDevice();
@@ -321,13 +323,39 @@ void RenderDevice::createInstance()
     const std::vector<const char *> validationLayers = {
         "VK_LAYER_KHRONOS_validation"};
 
-    uint32_t glfwExtensionCount = 0;
-    const char **glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-    if (!glfwExtensions || glfwExtensionCount == 0)
+    struct ExtensionRequirement
     {
-        throw std::runtime_error("Failed to get required GLFW extensions");
+        const char *name;
+        bool required;
+    };
+
+    std::vector<ExtensionRequirement> extensionCandidates;
+    if (useGlfwExtensions)
+    {
+        uint32_t glfwExtensionCount = 0;
+        const char **glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+        if (!glfwExtensions || glfwExtensionCount == 0)
+        {
+            throw std::runtime_error("Failed to get required GLFW extensions");
+        }
+        extensionCandidates.reserve(glfwExtensionCount);
+        for (uint32_t i = 0; i < glfwExtensionCount; ++i)
+        {
+            extensionCandidates.push_back({glfwExtensions[i], true});
+        }
     }
-    std::vector<const char *> requiredExtensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+    else
+    {
+        const char *surfaceExtensions[] = {
+            VK_KHR_SURFACE_EXTENSION_NAME,
+            "VK_KHR_xcb_surface",
+            "VK_KHR_wayland_surface",
+            "VK_KHR_display"};
+        for (const char *ext : surfaceExtensions)
+        {
+            extensionCandidates.push_back({ext, false});
+        }
+    }
 
     uint32_t availableLayerCount = 0;
     vkEnumerateInstanceLayerProperties(&availableLayerCount, nullptr);
@@ -361,6 +389,20 @@ void RenderDevice::createInstance()
             [name](const VkExtensionProperties &ext) { return strcmp(ext.extensionName, name) == 0; });
     };
 
+    std::vector<const char *> requiredExtensions;
+    requiredExtensions.reserve(extensionCandidates.size());
+    for (const auto &candidate : extensionCandidates)
+    {
+        if (extensionSupported(candidate.name))
+        {
+            requiredExtensions.push_back(candidate.name);
+        }
+        else if (candidate.required)
+        {
+            throw std::runtime_error(std::string("Missing required extension: ") + candidate.name);
+        }
+    }
+
     if (validationLayersEnabled && extensionSupported(VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
     {
         requiredExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -370,14 +412,6 @@ void RenderDevice::createInstance()
     {
         std::cerr << "[RenderDevice] VK_EXT_debug_utils not available. "
                   << "Validation layers will run without debug utils callbacks." << std::endl;
-    }
-
-    for (const auto *required : requiredExtensions)
-    {
-        if (!extensionSupported(required))
-        {
-            throw std::runtime_error(std::string("Missing required extension: ") + required);
-        }
     }
 
     enabledInstanceExtensionNames.clear();
@@ -751,7 +785,7 @@ std::vector<const char *> RenderDevice::getRequiredDeviceExtensions() {
             [name](const VkExtensionProperties &ext) { return strcmp(ext.extensionName, name) == 0; });
     };
 
-    std::vector<const char *> requiredExtensions = {
+    const char *baseExtensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
         VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
@@ -763,8 +797,26 @@ std::vector<const char *> RenderDevice::getRequiredDeviceExtensions() {
         VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
         VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME,
         VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
-        
     };
+
+    std::vector<const char *> requiredExtensions;
+    requiredExtensions.reserve(20);
+
+    for (const char* ext : baseExtensions)
+    {
+        if (deviceExtensionSupported(ext))
+        {
+            requiredExtensions.push_back(ext);
+        }
+        else if (useGlfwExtensions)
+        {
+            throw std::runtime_error(std::string("Required device extension missing: ") + ext);
+        }
+        else
+        {
+            std::cerr << "[RenderDevice] Optional device extension not available: " << ext << "\n";
+        }
+    }
 
     if (deviceExtensionSupported(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME)) {
         requiredExtensions.push_back(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
@@ -879,8 +931,10 @@ void RenderDevice::createLogicalDevice()
         createInfo.enabledLayerCount = 0;
     }
 
-    if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &logicalDevice) != VK_SUCCESS)
+    VkResult deviceCreateResult = vkCreateDevice(physicalDevice, &createInfo, nullptr, &logicalDevice);
+    if (deviceCreateResult != VK_SUCCESS)
     {
+        std::cerr << "[RenderDevice] vkCreateDevice failed with code " << deviceCreateResult << std::endl;
         throw std::runtime_error("Failed to create logical device");
     }
 

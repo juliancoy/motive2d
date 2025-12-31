@@ -33,6 +33,7 @@ struct VideoPlaybackState
     video::VideoDecoder decoder;
     VideoResources video;
     overlay::OverlayResources overlay;
+    overlay::ImageResource poseOverlayImage;
     overlay::FpsOverlayResources fpsOverlay;
     video::VideoColorInfo colorInfo;
     std::deque<video::DecodedFrame> pendingFrames;

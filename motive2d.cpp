@@ -1,21 +1,23 @@
 #include "engine2d.h"
+#include "pose_overlay.hpp"
 #include "video.h"
 
 #include <glm/glm.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
-#include <cmath>
-#include <chrono>
 #include <thread>
-#include <algorithm>
-#include <array>
 #include <vector>
 
 #define NCNN_VULKAN 1
@@ -215,6 +217,25 @@ bool cursorInPlayButton(double x, double y, int windowWidth, int windowHeight)
 {
     const ScrubberUi ui = computeScrubberUi(windowWidth, windowHeight);
     return x >= ui.iconLeft && x <= ui.iconRight && y >= ui.iconTop && y <= ui.iconBottom;
+}
+
+static uint32_t getFrameIndex(double seconds, double fps)
+{
+    if (fps <= 0.0)
+    {
+        return 0;
+    }
+    double value = seconds * fps;
+    if (value <= 0.0)
+    {
+        return 0;
+    }
+    double rounded = std::floor(value + 0.5);
+    if (rounded >= static_cast<double>(std::numeric_limits<uint32_t>::max()))
+    {
+        return std::numeric_limits<uint32_t>::max();
+    }
+    return static_cast<uint32_t>(rounded);
 }
 
 struct KeyPoint
@@ -663,6 +684,7 @@ void buildDetectionEntries(const std::vector<PoseObject>& objects,
 int main(int argc, char** argv)
 {
     CliOptions cli = parseCliOptions(argc, argv);
+    PoseOverlay poseOverlay(cli.videoPath);
 
     std::unique_ptr<PoseDetector> poseDetector;
     if (cli.poseEnabled)
@@ -735,7 +757,8 @@ int main(int argc, char** argv)
     }
 
     auto& playbackState = engine.getPlaybackState();
-    auto& overlayCompute = engine.getOverlayCompute();
+    auto& rectOverlayCompute = engine.getRectOverlayCompute();
+    auto& poseOverlayCompute = engine.getPoseOverlayCompute();
 
     overlay::ImageResource gradingOverlayImage;
     OverlayImageInfo gradingOverlayInfo{};
@@ -900,9 +923,10 @@ int main(int argc, char** argv)
                     const ScrubberUi ui = computeScrubberUi(inputWindow->width, inputWindow->height);
                     double x = 0.0;
                     glfwGetCursorPos(inputWindow->window, &x, nullptr);
-                    double deltaX = x - scrubDragStartX;
-                    double progressDelta = deltaX / (ui.right - ui.left);
-                    scrubProgressUi = std::clamp(scrubDragStartProgress + static_cast<float>(progressDelta), 0.0f, 1.0f);
+                    double progress = (x - ui.left) / (ui.right - ui.left);
+                    const float seekTime = scrubProgressUi * engine.getDuration();
+                    engine.seek(seekTime);
+                    playbackState.lastDisplayedSeconds = seekTime;
                     scrubDragging = false;
                     playing = true;
                 }
@@ -1024,30 +1048,57 @@ int main(int argc, char** argv)
             windowHeight = static_cast<float>(fbHeight);
         }
 
+        const uint32_t currentFrameIndex = getFrameIndex(playbackSeconds, playbackState.decoder.fps);
+        const auto& savedOverlayEntries = poseOverlay.entriesForFrame(currentFrameIndex);
+        const bool hasSavedOverlay = !savedOverlayEntries.empty();
+        const overlay::DetectionEntry* savedOverlayData = hasSavedOverlay ? savedOverlayEntries.data() : nullptr;
+
         glm::vec2 overlayRectCenter = rectCenter;
         glm::vec2 overlayRectSize(rectWidth, rectHeight);
         float overlayOuterThickness = 3.0f;
         float overlayInnerThickness = 3.0f;
-        if (detectionEnabled)
+        bool overlayActive = detectionEnabled || hasSavedOverlay || !detectionEntries.empty();
+
+
+        uint32_t overlayCount = 0;
+        const overlay::DetectionEntry* overlaySource = nullptr;
+        if (!detectionEntries.empty())
         {
-            overlayRectCenter = glm::vec2(windowWidth * 0.5f, windowHeight * 0.5f);
-            overlayRectSize = glm::vec2(windowWidth, windowHeight);
-            overlayOuterThickness = 0.0f;
-            overlayInnerThickness = 0.0f;
+            overlaySource = detectionEntries.data();
+            overlayCount = static_cast<uint32_t>(detectionEntries.size());
+        }
+        else if (hasSavedOverlay)
+        {
+            overlaySource = savedOverlayData;
+            overlayCount = static_cast<uint32_t>(savedOverlayEntries.size());
         }
 
-        runOverlayCompute(&engine,
-                          overlayCompute,
-                          playbackState.overlay.image,
-                          fbWidth,
-                          fbHeight,
-                          overlayRectCenter,
-                          overlayRectSize,
-                          overlayOuterThickness,
-                          overlayInnerThickness,
-                          detectionEnabled ? 1.0f : 0.0f,
-                          detectionEntries.empty() ? nullptr : detectionEntries.data(),
-                          static_cast<uint32_t>(detectionEntries.size()));
+        const float poseOverlayEnabled = overlayCount > 0 ? 1.0f : 0.0f;
+        overlay::runPoseOverlayCompute(&engine,
+                                       poseOverlayCompute,
+                                       playbackState.poseOverlayImage,
+                                       fbWidth,
+                                       fbHeight,
+                                       overlayRectCenter,
+                                       overlayRectSize,
+                                       overlayOuterThickness,
+                                       overlayInnerThickness,
+                                       poseOverlayEnabled,
+                                       overlaySource,
+                                       overlayCount);
+        const float rectDetectionFlag = detectionEnabled ? 1.0f : 0.0f;
+        overlay::runRectOverlayCompute(&engine,
+                                       rectOverlayCompute,
+                                       playbackState.poseOverlayImage,
+                                       playbackState.overlay.image,
+                                       fbWidth,
+                                       fbHeight,
+                                       overlayRectCenter,
+                                       overlayRectSize,
+                                       overlayOuterThickness,
+                                       overlayInnerThickness,
+                                       rectDetectionFlag,
+                                       overlayActive ? 1.0f : 0.0f);
         playbackState.overlay.info.overlay.view = playbackState.overlay.image.view;
         playbackState.overlay.info.overlay.sampler = playbackState.overlay.sampler;
         playbackState.overlay.info.extent = {fbWidth, fbHeight};

@@ -10,7 +10,7 @@ public:
     RenderDevice();
     ~RenderDevice();
 
-    void initialize();
+    void initialize(bool requireWindowExtensions = true);
     void shutdown();
 
     VkCommandBuffer beginSingleTimeCommands();
@@ -86,4 +86,5 @@ private:
     std::vector<const char *> enabledDeviceExtensionNamePtrs;
 
     VkDebugUtilsMessengerEXT debugMessenger;
+    bool useGlfwExtensions;
 };
