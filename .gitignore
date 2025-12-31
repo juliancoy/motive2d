@@ -26,3 +26,5 @@ models
 motive2d_yolo
 yolo11l-pose
 *.pt
+run_yolo11_seg*
+2025*

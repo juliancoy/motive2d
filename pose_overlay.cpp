@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <string>
 #include <vector>
 
 namespace
@@ -51,6 +52,166 @@ bool parseNumber(const char*& ptr, const char* end, double& out)
     return true;
 }
 
+bool parseJsonString(const char*& ptr, const char* end, std::string& out)
+{
+    if (!expectChar(ptr, end, '"'))
+    {
+        return false;
+    }
+    const char* start = ptr;
+    while (ptr < end && *ptr != '"')
+    {
+        if (*ptr == '\\' && ptr + 1 < end)
+        {
+            ptr += 2;
+        }
+        else
+        {
+            ++ptr;
+        }
+    }
+    if (ptr >= end)
+    {
+        return false;
+    }
+    out.assign(start, ptr);
+    ++ptr;
+    return true;
+}
+
+bool parseJsonNumberArray(const char*& ptr, const char* end, std::vector<float>& out)
+{
+    if (!expectChar(ptr, end, '['))
+    {
+        return false;
+    }
+    out.clear();
+    while (true)
+    {
+        skipWhitespace(ptr, end);
+        if (ptr >= end)
+        {
+            return false;
+        }
+        if (*ptr == ']')
+        {
+            ++ptr;
+            break;
+        }
+        double value = 0.0;
+        if (!parseNumber(ptr, end, value))
+        {
+            return false;
+        }
+        out.push_back(static_cast<float>(value));
+        skipWhitespace(ptr, end);
+        if (ptr >= end)
+        {
+            return false;
+        }
+        if (*ptr == ',')
+        {
+            ++ptr;
+            continue;
+        }
+        if (*ptr == ']')
+        {
+            ++ptr;
+            break;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool parseLegacyEntry(const char*& ptr, const char* end, double& frameValue, std::vector<float>& coords)
+{
+    if (!expectChar(ptr, end, '['))
+    {
+        return false;
+    }
+    skipWhitespace(ptr, end);
+    if (!parseNumber(ptr, end, frameValue))
+    {
+        return false;
+    }
+    if (!expectChar(ptr, end, ','))
+    {
+        return false;
+    }
+    skipWhitespace(ptr, end);
+    if (!parseJsonNumberArray(ptr, end, coords))
+    {
+        return false;
+    }
+    if (!expectChar(ptr, end, ']'))
+    {
+        return false;
+    }
+    return true;
+}
+
+bool parsePoseObject(const char*& ptr, const char* end, double& frameValue, std::vector<float>& coords)
+{
+    if (!expectChar(ptr, end, '{'))
+    {
+        return false;
+    }
+    bool frameSet = false;
+    bool poseSet = false;
+    std::string key;
+    while (true)
+    {
+        skipWhitespace(ptr, end);
+        if (ptr >= end)
+        {
+            return false;
+        }
+        if (*ptr == '}')
+        {
+            ++ptr;
+            break;
+        }
+        if (*ptr == ',')
+        {
+            ++ptr;
+            continue;
+        }
+        if (!parseJsonString(ptr, end, key))
+        {
+            return false;
+        }
+        if (!expectChar(ptr, end, ':'))
+        {
+            return false;
+        }
+        skipWhitespace(ptr, end);
+        if (key == "frame")
+        {
+            double value = 0.0;
+            if (!parseNumber(ptr, end, value))
+            {
+                return false;
+            }
+            frameValue = value;
+            frameSet = true;
+        }
+        else if (key == "pose" || key == "coords")
+        {
+            if (!parseJsonNumberArray(ptr, end, coords))
+            {
+                return false;
+            }
+            poseSet = true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    return frameSet && poseSet;
+}
 } // namespace
 
 PoseOverlay::PoseOverlay(const std::filesystem::path& videoPath)
@@ -136,56 +297,18 @@ bool PoseOverlay::parseJson(const std::string& text)
             ++ptr;
             continue;
         }
-        if (!expectChar(ptr, end, '['))
-        {
-            return false;
-        }
 
-        skipWhitespace(ptr, end);
         double frameValue = 0.0;
-        if (!parseNumber(ptr, end, frameValue))
+        bool parsedEntry = false;
+        if (*ptr == '[')
         {
-            return false;
+            parsedEntry = parseLegacyEntry(ptr, end, frameValue, coords);
         }
-        skipWhitespace(ptr, end);
-        if (!expectChar(ptr, end, ','))
+        else if (*ptr == '{')
         {
-            return false;
+            parsedEntry = parsePoseObject(ptr, end, frameValue, coords);
         }
-        skipWhitespace(ptr, end);
-        if (!expectChar(ptr, end, '['))
-        {
-            return false;
-        }
-
-        coords.clear();
-        while (true)
-        {
-            skipWhitespace(ptr, end);
-            if (ptr >= end)
-            {
-                return false;
-            }
-            if (*ptr == ']')
-            {
-                ++ptr;
-                break;
-            }
-            double value = 0.0;
-            if (!parseNumber(ptr, end, value))
-            {
-                return false;
-            }
-            coords.push_back(static_cast<float>(value));
-            skipWhitespace(ptr, end);
-            if (ptr < end && *ptr == ',')
-            {
-                ++ptr;
-            }
-        }
-
-        skipWhitespace(ptr, end);
-        if (!expectChar(ptr, end, ']'))
+        if (!parsedEntry)
         {
             return false;
         }
@@ -204,16 +327,7 @@ bool PoseOverlay::parseJson(const std::string& text)
         if (*ptr == ',')
         {
             ++ptr;
-            continue;
         }
-        if (*ptr == ']')
-        {
-            ++ptr;
-            break;
-        }
-
-        // Unexpected character between entries
-        return false;
     }
 
     skipWhitespace(ptr, end);

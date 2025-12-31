@@ -414,8 +414,11 @@ def combine_pose_outputs(videos, model_tag, segment_root):
         entries.sort(key=lambda entry: entry[0])
         output_path = video.with_name(f"{video.stem}_{model_tag}_coords.json")
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        entries_with_frame = [
+            {"frame": int(entry[0]), "pose": entry[1]} for entry in entries
+        ]
         with output_path.open("w", encoding="utf-8") as out_file:
-            json.dump(entries, out_file)
+            json.dump(entries_with_frame, out_file)
         print(f"[pose] Combined {len(entries)} entries into {output_path}")
 
 

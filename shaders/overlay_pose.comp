@@ -61,15 +61,6 @@ void main() {
     }
 
     vec2 frag = vec2(pixel) + vec2(0.5);
-    vec2 halfSize = pushC.rectSize * 0.5;
-    vec2 minP = pushC.rectCenter - halfSize;
-    vec2 maxP = pushC.rectCenter + halfSize;
-
-    if (frag.x < minP.x || frag.x > maxP.x || frag.y < minP.y || frag.y > maxP.y) {
-        imageStore(outImage, pixel, vec4(0.0));
-        return;
-    }
-
     vec4 poseColor = vec4(0.0);
     if (pushC.detectionCount > 0) {
         vec2 keypoints[17];

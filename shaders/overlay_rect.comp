@@ -36,24 +36,23 @@ void main() {
     vec2 minP = pushC.rectCenter - halfSize;
     vec2 maxP = pushC.rectCenter + halfSize;
 
-    if (pushC.detectionEnabled > 0.5) {
-        if (frag.x >= minP.x && frag.x <= maxP.x && frag.y >= minP.y && frag.y <= maxP.y) {
-            float distLeft = frag.x - minP.x;
-            float distRight = maxP.x - frag.x;
-            float distTop = maxP.y - frag.y;
-            float distBottom = frag.y - minP.y;
-            float minEdge = min(min(distLeft, distRight), min(distTop, distBottom));
+    // Draw rectangle border (black outer, white inner)
+    if (frag.x >= minP.x && frag.x <= maxP.x && frag.y >= minP.y && frag.y <= maxP.y) {
+        float distLeft = frag.x - minP.x;
+        float distRight = maxP.x - frag.x;
+        float distTop = maxP.y - frag.y;
+        float distBottom = frag.y - minP.y;
+        float minEdge = min(min(distLeft, distRight), min(distTop, distBottom));
 
-            vec4 color = vec4(0.0);
-            if (minEdge <= pushC.outerThickness) {
-                color = vec4(1.0, 0.0, 0.0, 1.0);
-            } else if (minEdge <= (pushC.outerThickness + pushC.innerThickness)) {
-                color = vec4(1.0, 0.5, 0.5, 1.0);
-            }
+        vec4 color = vec4(0.0);
+        if (minEdge <= pushC.outerThickness) {
+            color = vec4(0.0, 0.0, 0.0, 1.0); // Black outer border
+        } else if (minEdge <= (pushC.outerThickness + pushC.innerThickness)) {
+            color = vec4(1.0, 1.0, 1.0, 1.0); // White inner border
+        }
 
-            if (color.a > 0.0) {
-                finalColor = color;
-            }
+        if (color.a > 0.0) {
+            finalColor = color;
         }
     }
 

@@ -896,11 +896,17 @@ int main(int argc, char** argv)
                 double cursorX = 0.0;
                 double cursorY = 0.0;
                 glfwGetCursorPos(inputWindow->window, &cursorX, &cursorY);
-                if (cursorInPlayButton(cursorX, cursorY, inputWindow->width, inputWindow->height))
+                // Scale mouse coordinates from window to framebuffer for hit testing
+                double scaleX = static_cast<double>(windowWidth) / static_cast<double>(inputWindow->width);
+                double scaleY = static_cast<double>(windowHeight) / static_cast<double>(inputWindow->height);
+                double scaledCursorX = cursorX * scaleX;
+                double scaledCursorY = cursorY * scaleY;
+                
+                if (cursorInPlayButton(scaledCursorX, scaledCursorY, static_cast<int>(windowWidth), static_cast<int>(windowHeight)))
                 {
                     playing = !playing;
                 }
-                else if (cursorInScrubber(cursorX, cursorY, inputWindow->width, inputWindow->height))
+                else if (cursorInScrubber(scaledCursorX, scaledCursorY, static_cast<int>(windowWidth), static_cast<int>(windowHeight)))
                 {
                     scrubDragging = true;
                     scrubDragStartX = cursorX;
@@ -910,8 +916,7 @@ int main(int argc, char** argv)
                 }
                 else
                 {
-                    glm::vec2 scale(static_cast<float>(windowWidth / inputWindow->width),
-                                    static_cast<float>(windowHeight / inputWindow->height));
+                    glm::vec2 scale(static_cast<float>(scaleX), static_cast<float>(scaleY));
                     rectCenter = glm::vec2(static_cast<float>(cursorX) * scale.x,
                                            static_cast<float>(cursorY) * scale.y);
                 }
@@ -920,11 +925,18 @@ int main(int argc, char** argv)
             {
                 if (scrubDragging)
                 {
-                    const ScrubberUi ui = computeScrubberUi(inputWindow->width, inputWindow->height);
+                    // Scale mouse coordinates from window to framebuffer
                     double x = 0.0;
                     glfwGetCursorPos(inputWindow->window, &x, nullptr);
+                    // Convert window coordinates to framebuffer coordinates
+                    double scaleX = static_cast<double>(windowWidth) / static_cast<double>(inputWindow->width);
+                    x *= scaleX;
+                    
+                    const ScrubberUi ui = computeScrubberUi(static_cast<int>(windowWidth), static_cast<int>(windowHeight));
                     double progress = (x - ui.left) / (ui.right - ui.left);
-                    const float seekTime = scrubProgressUi * engine.getDuration();
+                    progress = std::clamp(progress, 0.0, 1.0);
+                    scrubProgressUi = static_cast<float>(progress);
+                    const float seekTime = static_cast<float>(progress * engine.getDuration());
                     engine.seek(seekTime);
                     playbackState.lastDisplayedSeconds = seekTime;
                     scrubDragging = false;
@@ -932,6 +944,22 @@ int main(int argc, char** argv)
                 }
                 mouseHeld = false;
             }
+        }
+
+        // Update scrub progress during dragging
+        if (scrubDragging && inputWindow)
+        {
+            // Scale mouse coordinates from window to framebuffer
+            double x = 0.0;
+            glfwGetCursorPos(inputWindow->window, &x, nullptr);
+            // Convert window coordinates to framebuffer coordinates
+            double scaleX = static_cast<double>(windowWidth) / static_cast<double>(inputWindow->width);
+            x *= scaleX;
+            
+            const ScrubberUi ui = computeScrubberUi(static_cast<int>(windowWidth), static_cast<int>(windowHeight));
+            double progress = (x - ui.left) / (ui.right - ui.left);
+            progress = std::clamp(progress, 0.0, 1.0);
+            scrubProgressUi = static_cast<float>(progress);
         }
 
         double scrollDelta = g_scrollDelta;
@@ -1030,7 +1058,8 @@ int main(int argc, char** argv)
         double playbackSeconds = advancePlayback(playbackState, playing && !scrubDragging);
         engine.setCurrentTime(static_cast<float>(playbackSeconds));
         const float totalDuration = engine.getDuration();
-        if (totalDuration > 0.0f)
+        // Only update scrub progress from playback when not dragging
+        if (totalDuration > 0.0f && !scrubDragging)
         {
             scrubProgressUi = static_cast<float>(playbackSeconds / totalDuration);
         }
