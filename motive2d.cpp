@@ -1086,7 +1086,7 @@ int main(int argc, char** argv)
         glm::vec2 overlayRectSize(rectWidth, rectHeight);
         float overlayOuterThickness = 3.0f;
         float overlayInnerThickness = 3.0f;
-        bool overlayActive = detectionEnabled || hasSavedOverlay || !detectionEntries.empty();
+        bool overlayActive = true;
 
 
         uint32_t overlayCount = 0;

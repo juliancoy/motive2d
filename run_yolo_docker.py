@@ -11,7 +11,6 @@ import shlex
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict
 
@@ -95,6 +94,20 @@ def parse_args():
         "--profile-log",
         default=os.environ.get("PROFILE_LOG", "yolo11_gpu_profile.csv"),
         help="Path to write GPU profile CSV (default: yolo11_gpu_profile.csv).",
+    )
+    parser.add_argument(
+        "--yolo-args",
+        help="A string of additional arguments to pass to the YOLO command inside docker.",
+    )
+    parser.add_argument(
+        "--no-remove-container",
+        action="store_true",
+        help="Do not remove the docker container after it exits. Useful for debugging.",
+    )
+    parser.add_argument(
+        "--docker-env",
+        action="append",
+        help="Set custom environment variables in the Docker container (e.g., --docker-env 'SAVE_TXT=False'). Can be used multiple times.",
     )
     return parser.parse_args()
 
@@ -267,37 +280,58 @@ def run_job(
         "SKIP_INSTALL": "1",
     }
 
-    command = []
-    if args.pose:
-        command.append("--pose")
     volumes = {str(HOST_WORKDIR): {"bind": str(CONTAINER_WORKDIR), "mode": "rw"}}
-    container_video = map_to_container_path(video, volumes)
-    command.append(str(container_video))
+
+    # Determine model name
     if args.model:
-        command.append(args.model)
+        model_name = args.model
+        model_path = Path(args.model)
+        if model_path.exists():
+            model_name = str(map_to_container_path(model_path, volumes))
+    elif args.pose:
+        model_name = "yolo11l-pose.pt"
+    else:
+        model_name = "yolo11n.pt"
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    project_path = map_to_container_path(output_dir, volumes, write=True)
-    env["PROJECT"] = str(project_path)
-    env["NAME"] = f"{video.stem}_{model_tag}"
-    out_path = output_dir / f"{video.stem}_{model_tag}_yolo11.mp4"
-    env["OUT"] = str(map_to_container_path(out_path, volumes, write=True))
-    env["COORDS"] = str(map_to_container_path(coords_host, volumes, write=True))
+    container_video = map_to_container_path(video, volumes)
+    ram_project_dir = Path("/dev/shm") / f"yolo11_job_{idx}_{int(time.time() * 1000)}"
+    container_coords = map_to_container_path(coords_host, volumes, write=True)
+    name = f"{video.stem}_{model_tag}"
 
+    # Command to run the Python script with CLI arguments
+    command = [
+        "python",
+        "run_yolo.py",
+        "--source",
+        str(container_video),
+        "--model",
+        model_name,
+        "--project",
+        str(ram_project_dir),
+        "--name",
+        name,
+        "--batch",
+        str(args.batch),
+        "--device",
+        args.device,
+        "--coords",
+        str(container_coords),
+    ]
     config = {
         "image": args.image,
-        "name": f"yolo11_job_{idx}_{int(time.time()*1000)}",
+        "name": f"yolo11_job_{idx}",
         "command": command,
         "volumes": volumes,
         "working_dir": "/work",
         "environment": env,
-        "remove": True,
+        "remove": not args.no_remove_container,
         "detach": False,
+        "entrypoint": [],
     }
     if device_requests:
         config["device_requests"] = device_requests
 
-    print(f"[job {idx}] running {command}")
+    print(f"[job {idx}] running Python script for coordinates extraction (no video)")
     try:
         result = run_container(config)
     except ContainerError as err:
@@ -349,40 +383,34 @@ def main():
         DeviceRequest(count=-1, capabilities=[["gpu"]]),
     ]
 
-    concurrency = min(args.workers, len(job_videos))
-    futures = []
     model_tag = get_model_tag(args)
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        for idx, video in enumerate(job_videos):
-            if not video.exists():
-                print(f"[job {idx}] skipping missing video {video}")
-                continue
-            coords_host = (
-                Path(args.coords).resolve()
-                if args.coords
-                else video.with_name(f"{video.stem}_{model_tag}_coords.txt")
+    for idx, video in enumerate(job_videos):
+        if not video.exists():
+            print(f"[job {idx}] skipping missing video {video}")
+            continue
+        coords_host = (
+            Path(args.coords).resolve()
+            if args.coords
+            else video.with_name(f"{video.stem}_{model_tag}_coords.txt")
+        )
+        if coords_host.exists():
+            print(
+                f"[job {idx}] found existing coords {coords_host}; skipping inference for {video}"
             )
-            if coords_host.exists():
-                print(
-                    f"[job {idx}] found existing coords {coords_host}; skipping inference for {video}"
-                )
-                continue
-            output_dir = video.parent
-            futures.append(
-                executor.submit(
-                    run_job,
-                    idx,
-                    video,
-                    args,
-                    output_dir,
-                    coords_host,
-                    model_tag,
-                    device_requests=device_requests,
-                )
+            continue
+        output_dir = video.parent
+        try:
+            run_job(
+                idx,
+                video,
+                args,
+                output_dir,
+                coords_host,
+                model_tag,
+                device_requests=device_requests,
             )
-        for future in as_completed(futures):
-            if future.exception():
-                print(f"[pipeline] job raised: {future.exception()}", file=sys.stderr)
+        except Exception as exc:
+            print(f"[pipeline] job raised: {exc}", file=sys.stderr)
 
     if args.pose:
         combine_pose_outputs(input_videos, model_tag, segment_dir)

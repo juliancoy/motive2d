@@ -9,11 +9,19 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <vector>
 
 namespace
 {
+constexpr std::array<glm::vec4, 4> kLabelPalette = {
+    glm::vec4(0.99f, 0.49f, 0.18f, 1.0f),
+    glm::vec4(0.36f, 0.72f, 0.84f, 1.0f),
+    glm::vec4(0.42f, 0.88f, 0.46f, 1.0f),
+    glm::vec4(0.94f, 0.73f, 0.25f, 1.0f),
+};
+
 void skipWhitespace(const char*& ptr, const char* end)
 {
     while (ptr < end && std::isspace(static_cast<unsigned char>(*ptr)))
@@ -212,14 +220,38 @@ bool parsePoseObject(const char*& ptr, const char* end, double& frameValue, std:
 
     return frameSet && poseSet;
 }
+
+bool parsePoseJsonLine(const std::string& line, int& frameIndex, std::vector<float>& coords)
+{
+    const char* ptr = line.c_str();
+    const char* end = ptr + line.size();
+    skipWhitespace(ptr, end);
+    double frameValue = 0.0;
+    if (!parsePoseObject(ptr, end, frameValue, coords))
+    {
+        return false;
+    }
+    skipWhitespace(ptr, end);
+    if (ptr != end)
+    {
+        return false;
+    }
+    frameIndex = static_cast<int>(frameValue);
+    return true;
+}
 } // namespace
 
 PoseOverlay::PoseOverlay(const std::filesystem::path& videoPath)
 {
     const std::filesystem::path coordsPath = poseCoordsPath(videoPath);
+    if (coordsPath.empty())
+    {
+        std::cout << "[pose] No coords file found for " << videoPath << "\n";
+        return;
+    }
     if (!coordsPath.empty() && loadCoordsFile(coordsPath))
     {
-        valid_ = !frameData_.empty();
+        valid_ = !frameData_.empty() || !detectionData_.empty();
         if (valid_)
         {
             std::cout << "[pose] Loaded overlay for " << coordsPath << " (" << frameData_.size()
@@ -239,7 +271,17 @@ std::filesystem::path PoseOverlay::poseCoordsPath(const std::filesystem::path& v
     {
         return {};
     }
-    return videoPath.parent_path() / (stem + "_pose_coords.json");
+    std::filesystem::path jsonPath = videoPath.parent_path() / (stem + "_pose_coords.json");
+    if (std::filesystem::exists(jsonPath))
+    {
+        return jsonPath;
+    }
+    std::filesystem::path txtPath = videoPath.parent_path() / (stem + "_pose_coords.txt");
+    if (std::filesystem::exists(txtPath))
+    {
+        return txtPath;
+    }
+    return {};
 }
 
 bool PoseOverlay::loadCoordsFile(const std::filesystem::path& coordsPath)
@@ -255,15 +297,31 @@ bool PoseOverlay::loadCoordsFile(const std::filesystem::path& coordsPath)
         return false;
     }
 
-    std::string contents;
-    contents.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    if (contents.empty())
-    {
-        return false;
-    }
+    frameData_.clear();
+    detectionData_.clear();
+    labelColors_.clear();
 
-    const bool parsed = parseJson(contents);
-    valid_ = parsed && !frameData_.empty();
+    const std::string extension = coordsPath.extension().string();
+    bool parsed = false;
+    if (extension == ".txt")
+    {
+        parsed = parseTxt(file);
+    }
+    else
+    {
+        std::string contents;
+        contents.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        if (contents.empty())
+        {
+            return false;
+        }
+        parsed = parseJson(contents);
+    }
+    valid_ = parsed && (!frameData_.empty() || !detectionData_.empty());
+    if (!valid_)
+    {
+        std::cout << "[pose] Failed to parse coords file: " << coordsPath << "\n";
+    }
     return valid_;
 }
 
@@ -334,6 +392,89 @@ bool PoseOverlay::parseJson(const std::string& text)
     return true;
 }
 
+bool PoseOverlay::parseTxt(std::istream& stream)
+{
+    detectionData_.clear();
+    struct RawEntry
+    {
+        int frame = 0;
+        std::string label;
+        float confidence = 0.0f;
+        float x1 = 0.0f;
+        float y1 = 0.0f;
+        float x2 = 0.0f;
+        float y2 = 0.0f;
+    };
+
+    std::vector<RawEntry> entries;
+    float maxX = 0.0f;
+    float maxY = 0.0f;
+    std::string line;
+    std::vector<float> coords;
+    bool hasPoseData = false;
+    while (std::getline(stream, line))
+    {
+        auto first = line.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos)
+        {
+            continue;
+        }
+        if (line[first] == '#')
+        {
+            continue;
+        }
+        if (line[first] == '{')
+        {
+            int frame = 0;
+            if (parsePoseJsonLine(line.c_str() + first, frame, coords))
+            {
+                if (frame >= 0)
+                {
+                    storeFrame(frame, coords);
+                    hasPoseData = true;
+                }
+            }
+            continue;
+        }
+        std::istringstream lineStream(line);
+        RawEntry entry;
+        if (!(lineStream >> entry.frame >> entry.label >> entry.confidence >> entry.x1 >> entry.y1 >> entry.x2 >> entry.y2))
+        {
+            continue;
+        }
+        maxX = std::max(maxX, std::max(entry.x1, entry.x2));
+        maxY = std::max(maxY, std::max(entry.y1, entry.y2));
+        entries.push_back(entry);
+    }
+
+    bool detectionValid = false;
+    if (!entries.empty())
+    {
+        const float width = std::max(1.0f, maxX);
+        const float height = std::max(1.0f, maxY);
+        for (const RawEntry& entry : entries)
+        {
+            const float minX = std::min(entry.x1, entry.x2);
+            const float minY = std::min(entry.y1, entry.y2);
+            const float boxW = std::abs(entry.x2 - entry.x1);
+            const float boxH = std::abs(entry.y2 - entry.y1);
+            if (boxW <= 0.0f || boxH <= 0.0f)
+            {
+                continue;
+            }
+            overlay::DetectionEntry det{};
+            det.bbox = glm::vec4(minX / width, minY / height, boxW / width, boxH / height);
+            det.color = colorForLabel(entry.label);
+            det.confidence = entry.confidence;
+            det.classId = 0;
+            detectionData_[entry.frame].push_back(det);
+        }
+        detectionValid = !detectionData_.empty();
+    }
+
+    return hasPoseData || detectionValid;
+}
+
 void PoseOverlay::storeFrame(int frame, const std::vector<float>& coords)
 {
     constexpr size_t expectedSize = 5 + 3 * kKeypointCount;
@@ -384,6 +525,23 @@ void PoseOverlay::storeFrame(int frame, const std::vector<float>& coords)
     list.push_back(pose);
 }
 
+glm::vec4 PoseOverlay::colorForLabel(const std::string& label)
+{
+    if (label.empty())
+    {
+        return kLabelPalette[0];
+    }
+    auto it = labelColors_.find(label);
+    if (it != labelColors_.end())
+    {
+        return it->second;
+    }
+    const size_t index = labelColors_.size() % kLabelPalette.size();
+    const glm::vec4 color = kLabelPalette[index];
+    labelColors_.emplace(label, color);
+    return color;
+}
+
 const std::vector<overlay::DetectionEntry>& PoseOverlay::entriesForFrame(uint32_t frameIndex)
 {
     if (!valid_)
@@ -399,6 +557,13 @@ const std::vector<overlay::DetectionEntry>& PoseOverlay::entriesForFrame(uint32_
 
     cachedFrameIndex_ = static_cast<int>(frameIndex);
     entriesCache_.clear();
+
+    auto detectionIt = detectionData_.find(static_cast<int>(frameIndex));
+    if (detectionIt != detectionData_.end())
+    {
+        entriesCache_ = detectionIt->second;
+        return entriesCache_;
+    }
 
     const auto it = frameData_.find(cachedFrameIndex_);
     if (it == frameData_.end())

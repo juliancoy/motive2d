@@ -5,3 +5,5 @@ ffmpeg -i ../P1090533.MOV \
   -crf 16 \
   -c:a copy \
   P1090533_main8_hevc_fast.mkv
+
+# Pose coordinates are stored in P1090533_pose_coords.txt for the overlay pipeline.

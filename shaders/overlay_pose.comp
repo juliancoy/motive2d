@@ -54,6 +54,20 @@ void drawSkeletonLine(vec2 frag, vec2 p1, vec2 p2, vec4 color, inout vec4 outCol
     }
 }
 
+void drawBoundingBox(vec2 frag, vec2 minP, vec2 maxP, vec4 color, inout vec4 outColor) {
+    if (frag.x >= minP.x && frag.x <= maxP.x && frag.y >= minP.y && frag.y <= maxP.y) {
+        float left = frag.x - minP.x;
+        float right = maxP.x - frag.x;
+        float top = maxP.y - frag.y;
+        float bottom = frag.y - minP.y;
+        float minEdge = min(min(left, right), min(top, bottom));
+        const float border = 2.0;
+        if (minEdge <= border) {
+            outColor = color;
+        }
+    }
+}
+
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (pixel.x >= int(pushC.outputSize.x) || pixel.y >= int(pushC.outputSize.y)) {
@@ -84,6 +98,11 @@ void main() {
                     float radius = max(boxSize.x, boxSize.y) * 0.5;
                     drawKeypoint(frag, boxCenter, radius, det.color, poseColor);
                 }
+            }
+            else {
+                vec2 minP = det.bbox.xy * pushC.outputSize;
+                vec2 maxP = (det.bbox.xy + det.bbox.zw) * pushC.outputSize;
+                drawBoundingBox(frag, minP, maxP, det.color, poseColor);
             }
         }
 

@@ -185,13 +185,20 @@ bool buildGradingOverlay(Engine2D* engine,
                          bool previewEnabled,
                          bool detectionEnabled)
 {
-    if (layout.labels.empty())
-    {
-        layout.labels = {"Exposure", "Contrast", "Saturation",
-                         "Shadows R", "Shadows G", "Shadows B",
-                         "Midtones R", "Midtones G", "Midtones B",
-                         "Highlights R", "Highlights G", "Highlights B"};
-    }
+    constexpr std::array<const char*, 12> kDefaultLabels = {
+        "Exposure",
+        "Contrast",
+        "Saturation",
+        "Shadows R",
+        "Shadows G",
+        "Shadows B",
+        "Midtones R",
+        "Midtones G",
+        "Midtones B",
+        "Highlights R",
+        "Highlights G",
+        "Highlights B",
+    };
 
     if (fbWidth == 0 || fbHeight == 0)
     {
@@ -321,7 +328,8 @@ bool buildGradingOverlay(Engine2D* engine,
                    255, 255, 255, 255);
 
         // Label text drawn above the bar
-        glyph::OverlayBitmap label = glyph::buildLabeledOverlay(layout.width, layout.height, layout.labels[i], 0.0f);
+        const char* labelText = (i < layout.labels.size() && !layout.labels[i].empty()) ? layout.labels[i].c_str() : kDefaultLabels[i];
+        glyph::OverlayBitmap label = glyph::buildLabeledOverlay(layout.width, layout.height, labelText, 0.0f);
         if (!label.pixels.empty() && label.width > 0 && label.height > 0)
         {
             uint32_t textX = x0;

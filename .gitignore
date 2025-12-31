@@ -28,3 +28,4 @@ yolo11l-pose
 *.pt
 run_yolo11_seg*
 2025*
+scripts

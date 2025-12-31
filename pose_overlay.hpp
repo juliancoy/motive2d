@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <istream>
 #include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 #include <string>
@@ -34,9 +35,13 @@ private:
     static std::filesystem::path poseCoordsPath(const std::filesystem::path& videoPath);
     bool loadCoordsFile(const std::filesystem::path& coordsPath);
     bool parseJson(const std::string& text);
+    bool parseTxt(std::istream& lines);
     void storeFrame(int frame, const std::vector<float>& coords);
+    glm::vec4 colorForLabel(const std::string& label);
 
     std::unordered_map<int, std::vector<FramePose>> frameData_;
+    std::unordered_map<int, std::vector<overlay::DetectionEntry>> detectionData_;
+    std::unordered_map<std::string, glm::vec4> labelColors_;
     std::vector<overlay::DetectionEntry> entriesCache_;
     int cachedFrameIndex_ = -1;
     glm::vec4 keypointColor_{0.9f, 0.4f, 0.7f, 1.0f};
