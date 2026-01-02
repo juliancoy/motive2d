@@ -12,8 +12,10 @@ import pathlib
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='Build the Motive engine')
 parser.add_argument('--rebuild', action='store_true', help='Force rebuild all files, ignoring timestamps')
+parser.add_argument('--asan', action='store_true', help='Enable AddressSanitizer instrumentation')
 args = parser.parse_args()
 REBUILD = args.rebuild
+USE_ASAN = args.asan
 
 # Paths
 this_dir = os.path.dirname(__file__)
@@ -212,10 +214,7 @@ def save_manifest(manifest):
 
 # Flags
 debug_flags = "-g -O0"
-DEBUG_MODE = "NONE"
-sanitize_flags = ""
-if DEBUG_MODE == "ADDRESS_SANITIZER":
-    sanitize_flags = "-fsanitize=address -fno-omit-frame-pointer"
+sanitize_flags = "-fsanitize=address -fno-omit-frame-pointer" if USE_ASAN else ""
 
 include_flags = " ".join(f"-I{p}" for p in include_paths)
 lib_flags = " ".join(f"-L{p}" for p in lib_paths)

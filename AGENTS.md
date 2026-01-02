@@ -227,6 +227,22 @@ Engine2D (engine.h/engine.cpp)
 - **Camera:** Owns camera UBO, descriptor set
 - **Model:** Owns meshes and textures
 - **Primitive:** Owns vertex buffers, object UBOs, descriptor sets
-- **Texture:** Owns image resources and samplers
+## Next Todo: Fix Black Screen Video Rendering
+
+**Issue:** Video playback shows black screen despite correct YUV data being decoded and uploaded.
+
+**Root Cause Identified:** Format mismatch between decoder output (`yuv422p10le` planar 4:2:2) and requested software format (`p010le` packed 4:2:0) has been fixed.
+
+**Remaining Issues to Investigate:**
+1. **Vulkan rendering pipeline**: Verify compute shader execution, texture binding, and descriptor sets
+2. **Texture format compatibility**: Ensure 16-bit UNORM textures (R16_UNORM, R16G16_UNORM) are correctly sampled by shader
+3. **Swapchain presentation**: Confirm frames are being presented to the window
+4. **Shader debugging**: Add more instrumentation to verify shader execution path
+
+**Immediate Actions:**
+- Enable Vulkan validation layers for error detection
+- Add logging to `display2d.cpp` renderFrame method to track pipeline execution
+- Verify texture creation matches shader expectations in `video_frame_utils.cpp`
+- Test with 8-bit video to isolate 10-bit YUV conversion issues
 
 This hierarchical structure allows for efficient resource management and clear separation of responsibilities while maintaining flexibility for future extensions. The separation of Camera into its own class enables better organization and potential multi-camera scenarios.

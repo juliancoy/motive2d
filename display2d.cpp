@@ -1,6 +1,7 @@
 #include "display2d.h"
 #include "engine2d.h"
 #include "utils.h"
+#include <cstdlib>
 #include <stdexcept>
 #include <algorithm>
 #include <array>
@@ -48,6 +49,7 @@ struct ComputePushConstants
     glm::vec2 overlaySize;
     glm::vec2 fpsOverlayOrigin;
     glm::vec2 fpsOverlaySize;
+    glm::vec4 fpsOverlayBackground;
     float scrubProgress;
     float scrubPlaying;
     uint32_t scrubberEnabled;
@@ -59,9 +61,10 @@ struct ComputePushConstants
     glm::vec4 midtones;   // rgb, w unused
     glm::vec4 highlights; // rgb, w unused
 };
-static_assert(sizeof(ComputePushConstants) == 192, "Compute push constants must match shader layout");
+static_assert(sizeof(ComputePushConstants) == 208, "Compute push constants must match shader layout");
 static_assert(offsetof(ComputePushConstants, overlayOrigin) == 72, "overlayOrigin offset mismatch with shader");
 static_assert(offsetof(ComputePushConstants, fpsOverlayOrigin) == 88, "fpsOverlayOrigin offset mismatch with shader");
+static_assert(offsetof(ComputePushConstants, fpsOverlayBackground) == 104, "fpsOverlayBackground offset mismatch with shader");
 
 VkExtent2D chooseSwapExtent(GLFWwindow* window, const VkSurfaceCapabilitiesKHR& capabilities)
 {
@@ -84,6 +87,7 @@ VkExtent2D chooseSwapExtent(GLFWwindow* window, const VkSurfaceCapabilitiesKHR& 
                                    std::min(capabilities.maxImageExtent.height, actualExtent.height));
     return actualExtent;
 }
+const bool kRenderDebugEnabled = (::getenv("MOTIVE2D_DEBUG_RENDER") != nullptr);
 } // namespace
 
 Display2D::Display2D(Engine2D* engine, int width, int height, const char* title)
@@ -143,6 +147,16 @@ void Display2D::shutdown()
         vkDestroyDescriptorPool(engine->logicalDevice, descriptorPool, nullptr);
         descriptorPool = VK_NULL_HANDLE;
     }
+    if (scrubPipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(engine->logicalDevice, scrubPipeline, nullptr);
+        scrubPipeline = VK_NULL_HANDLE;
+    }
+    if (overlayPipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(engine->logicalDevice, overlayPipeline, nullptr);
+        overlayPipeline = VK_NULL_HANDLE;
+    }
     if (computePipeline != VK_NULL_HANDLE)
     {
         vkDestroyPipeline(engine->logicalDevice, computePipeline, nullptr);
@@ -191,10 +205,13 @@ void Display2D::shutdown()
     auto swapchainMs = std::chrono::duration_cast<std::chrono::milliseconds>(tSwapchain - tWait).count();
     auto gpuObjectsMs = std::chrono::duration_cast<std::chrono::milliseconds>(tGpuObjects - tSwapchain).count();
     auto windowMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tGpuObjects).count();
-    std::cout << "[Display2D] teardown timing: waitAll=" << waitMs
-              << " ms, swapchain=" << swapchainMs
-              << " ms, gpuObjects=" << gpuObjectsMs
-              << " ms, window=" << windowMs << " ms" << std::endl;
+    if (kRenderDebugEnabled)
+    {
+        std::cout << "[Display2D] teardown timing: waitAll=" << waitMs
+                  << " ms, swapchain=" << swapchainMs
+                  << " ms, gpuObjects=" << gpuObjectsMs
+                  << " ms, window=" << windowMs << " ms" << std::endl;
+    }
 
     shutdownPerformed = true;
 }
@@ -312,6 +329,16 @@ void Display2D::createSwapchain()
     }
 }
 
+void Display2D::setOverlayPassEnabled(bool enabled)
+{
+    overlayPassEnabled = enabled;
+}
+
+void Display2D::setVideoPassEnabled(bool enabled)
+{
+    videoPassEnabled = enabled;
+}
+
 void Display2D::cleanupSwapchain()
 {
     using clock = std::chrono::steady_clock;
@@ -357,11 +384,14 @@ void Display2D::cleanupSwapchain()
     auto semAvailMs = std::chrono::duration_cast<std::chrono::milliseconds>(tImageSems - tFences).count();
     auto semRenderMs = std::chrono::duration_cast<std::chrono::milliseconds>(tRenderSems - tImageSems).count();
     auto swapchainMs = std::chrono::duration_cast<std::chrono::milliseconds>(tSwapchain - tRenderSems).count();
-    std::cout << "[Display2D] cleanupSwapchain timing: views=" << viewsMs
-              << " ms, fences=" << fencesMs
-              << " ms, sem(ap)=" << semAvailMs
-              << " ms, sem(render)=" << semRenderMs
-              << " ms, swapchain=" << swapchainMs << " ms" << std::endl;
+    if (kRenderDebugEnabled)
+    {
+        std::cout << "[Display2D] cleanupSwapchain timing: views=" << viewsMs
+                  << " ms, fences=" << fencesMs
+                  << " ms, sem(ap)=" << semAvailMs
+                  << " ms, sem(render)=" << semRenderMs
+                  << " ms, swapchain=" << swapchainMs << " ms" << std::endl;
+    }
 }
 
 void Display2D::createCommandResources()
@@ -396,6 +426,12 @@ void Display2D::createComputeResources()
         curveUBO = VK_NULL_HANDLE;
         curveUBOMemory = VK_NULL_HANDLE;
         curveUBOMapped = nullptr;
+    }
+
+    if (scrubPipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(engine->logicalDevice, scrubPipeline, nullptr);
+        scrubPipeline = VK_NULL_HANDLE;
     }
 
     // Descriptor set layout
@@ -483,6 +519,21 @@ void Display2D::createComputeResources()
 
     vkDestroyShaderModule(engine->logicalDevice, shaderModule, nullptr);
 
+    auto overlayCode = readSPIRVFile("shaders/overlay_blit.comp.spv");
+    VkShaderModule overlayModule = engine->createShaderModule(overlayCode);
+    stageInfo.module = overlayModule;
+    pipelineInfo.stage = stageInfo;
+
+    if (vkCreateComputePipelines(engine->logicalDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &overlayPipeline) != VK_SUCCESS)
+    {
+        vkDestroyShaderModule(engine->logicalDevice, overlayModule, nullptr);
+        vkDestroyPipeline(engine->logicalDevice, computePipeline, nullptr);
+        computePipeline = VK_NULL_HANDLE;
+        throw std::runtime_error("Failed to create overlay compute pipeline for Display2D");
+    }
+
+    vkDestroyShaderModule(engine->logicalDevice, overlayModule, nullptr);
+
     // Curve UBO
     engine->createBuffer(curveUBOSize,
                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -537,6 +588,21 @@ void Display2D::createComputeResources()
     {
         throw std::runtime_error("Failed to allocate descriptor sets for Display2D");
     }
+
+    auto scrubCode = readSPIRVFile("shaders/scrubber_blit.comp.spv");
+    VkShaderModule scrubModule = engine->createShaderModule(scrubCode);
+    stageInfo.module = scrubModule;
+    pipelineInfo.stage = stageInfo;
+    if (vkCreateComputePipelines(engine->logicalDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &scrubPipeline) != VK_SUCCESS)
+    {
+        vkDestroyShaderModule(engine->logicalDevice, scrubModule, nullptr);
+        vkDestroyPipeline(engine->logicalDevice, overlayPipeline, nullptr);
+        overlayPipeline = VK_NULL_HANDLE;
+        vkDestroyPipeline(engine->logicalDevice, computePipeline, nullptr);
+        computePipeline = VK_NULL_HANDLE;
+        throw std::runtime_error("Failed to create scrubber compute pipeline for Display2D");
+    }
+    vkDestroyShaderModule(engine->logicalDevice, scrubModule, nullptr);
 }
 
 void Display2D::recreateSwapchain()
@@ -661,24 +727,6 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
                          0, nullptr,
                          1, &toGeneral);
 
-    VkImageMemoryBarrier toRead{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    toRead.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    toRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toRead.image = swapImage;
-    toRead.subresourceRange = toGeneral.subresourceRange;
-    toRead.srcAccessMask = 0;
-    toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    vkCmdPipelineBarrier(commandBuffer,
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         0,
-                         0, nullptr,
-                         0, nullptr,
-                         1, &toRead);
-
     // Update descriptor set for this image
     VkDescriptorImageInfo storageInfo{};
     storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -767,15 +815,20 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
 
     vkUpdateDescriptorSets(engine->logicalDevice, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-    vkCmdBindDescriptorSets(commandBuffer,
-                            VK_PIPELINE_BIND_POINT_COMPUTE,
-                            pipelineLayout,
-                            0,
-                            1,
-                            &descriptorSets[imageIndex],
-                            0,
-                            nullptr);
+    // DEBUG: Always enable video pass for testing
+    bool debugForceVideoPass = false;
+    if (videoPassEnabled || debugForceVideoPass)
+    {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_COMPUTE,
+                                pipelineLayout,
+                                0,
+                                1,
+                                &descriptorSets[imageIndex],
+                                0,
+                                nullptr);
+    }
 
     const float reservedHeight = kScrubberHeight + kScrubberMargin * 2.0f;
     const float availableHeight = std::max(1.0f, static_cast<float>(swapchainExtent.height) - reservedHeight);
@@ -870,12 +923,100 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
     push.overlaySize = glm::vec2(static_cast<float>(clampedOverlayW), static_cast<float>(clampedOverlayH));
     push.fpsOverlayOrigin = glm::vec2(static_cast<float>(clampedFpsX), static_cast<float>(clampedFpsY));
     push.fpsOverlaySize = glm::vec2(static_cast<float>(clampedFpsW), static_cast<float>(clampedFpsH));
+    push.fpsOverlayBackground =
+        fpsOverlayValid ? glm::vec4(0.0f, 0.0f, 0.0f, 0.55f) : glm::vec4(0.0f);
+
+    if (kRenderDebugEnabled)
+    {
+        std::cout << "[Display2D] renderFrame image=" << imageIndex
+                  << " overlayEnabled=" << overlayValid
+                  << " fpsOverlayEnabled=" << fpsOverlayValid
+                  << " overlayPassEnabled=" << overlayPassEnabled
+                  << " targetSize=" << push.targetSize.x << "x" << push.targetSize.y
+                  << " overlaySize=" << push.overlaySize.x << "x" << push.overlaySize.y
+                  << " fpsSize=" << push.fpsOverlaySize.x << "x" << push.fpsOverlaySize.y
+                  << std::endl;
+    }
 
     vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &push);
 
     const uint32_t groupX = (swapchainExtent.width + 15) / 16;
     const uint32_t groupY = (swapchainExtent.height + 15) / 16;
-    vkCmdDispatch(commandBuffer, groupX, groupY, 1);
+    bool videoPassDispatched = false;
+    if (videoPassEnabled || debugForceVideoPass)
+    {
+        vkCmdDispatch(commandBuffer, groupX, groupY, 1);
+        videoPassDispatched = true;
+        if (kRenderDebugEnabled)
+        {
+            std::cout << "[Display2D] Video pass dispatched, request sync state overlayPassEnabled="
+                      << overlayPassEnabled << std::endl;
+        }
+    }
+
+    bool scrubPassDispatched = false;
+    if (scrubPipeline != VK_NULL_HANDLE && push.scrubberEnabled != 0u)
+    {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, scrubPipeline);
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_COMPUTE,
+                                pipelineLayout,
+                                0,
+                                1,
+                                &descriptorSets[imageIndex],
+                                0,
+                                nullptr);
+        vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &push);
+        vkCmdDispatch(commandBuffer, groupX, groupY, 1);
+        scrubPassDispatched = true;
+    }
+    else if (kRenderDebugEnabled)
+    {
+        std::cout << "[Display2D] Video pass skipped (blit disabled)\n";
+    }
+
+    const bool needsOverlayPass = overlayPassEnabled && (overlayValid || fpsOverlayValid);
+    if (needsOverlayPass && overlayPipeline != VK_NULL_HANDLE)
+    {
+        if (videoPassDispatched || scrubPassDispatched)
+        {
+            VkImageMemoryBarrier overlayBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            overlayBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            overlayBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            overlayBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            overlayBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            overlayBarrier.image = swapImage;
+            overlayBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            overlayBarrier.subresourceRange.baseMipLevel = 0;
+            overlayBarrier.subresourceRange.levelCount = 1;
+            overlayBarrier.subresourceRange.baseArrayLayer = 0;
+            overlayBarrier.subresourceRange.layerCount = 1;
+            overlayBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            overlayBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(commandBuffer,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0,
+                                 0, nullptr,
+                                 0, nullptr,
+                                 1, &overlayBarrier);
+        }
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, overlayPipeline);
+        vkCmdBindDescriptorSets(commandBuffer,
+                                VK_PIPELINE_BIND_POINT_COMPUTE,
+                                pipelineLayout,
+                                0,
+                                1,
+                                &descriptorSets[imageIndex],
+                                0,
+                                nullptr);
+        vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &push);
+        vkCmdDispatch(commandBuffer, groupX, groupY, 1);
+        if (kRenderDebugEnabled)
+        {
+            std::cout << "[Display2D] Overlay pass dispatched" << std::endl;
+        }
+    }
 
     VkImageMemoryBarrier toPresent{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     toPresent.oldLayout = VK_IMAGE_LAYOUT_GENERAL;

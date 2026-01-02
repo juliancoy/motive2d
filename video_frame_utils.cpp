@@ -161,7 +161,15 @@ void copyPlanarFrameToBuffer(const VideoDecoder& decoder,
         buffer.resize(static_cast<size_t>(decoder.bufferSize));
     }
 
+    // DEBUG: Print frame info
+    static int frameCount = 0;
+    frameCount++;
+
     uint8_t* dstY = buffer.data();
+    uint64_t ySum = 0;
+    uint64_t uSum = 0;
+    uint64_t vSum = 0;
+    uint32_t sampleCount = 0;
     const size_t lumaRowBytes = static_cast<size_t>(width) * bytesPerComponent;
     const bool interleaved = decoder.chromaInterleaved;
     const uint32_t bitDepth = decoder.bitDepth > 0 ? decoder.bitDepth : 8;
@@ -170,6 +178,11 @@ void copyPlanarFrameToBuffer(const VideoDecoder& decoder,
         for (uint32_t row = 0; row < height; ++row) {
             const uint8_t* srcRow = frame->data[0] + static_cast<size_t>(row) * frame->linesize[0];
             std::memcpy(dstY + static_cast<size_t>(row) * lumaRowBytes, srcRow, lumaRowBytes);
+            // Calculate sum for debugging
+            for (uint32_t col = 0; col < width; ++col) {
+                ySum += srcRow[col];
+                sampleCount++;
+            }
         }
     } else {
         uint16_t* dstY16 = reinterpret_cast<uint16_t*>(dstY);
@@ -179,6 +192,8 @@ void copyPlanarFrameToBuffer(const VideoDecoder& decoder,
             for (uint32_t col = 0; col < width; ++col) {
                 uint16_t value = srcRow[col];
                 dstRow[col] = shift ? static_cast<uint16_t>(value << shift) : value;
+                ySum += value;
+                sampleCount++;
             }
         }
     }
@@ -222,6 +237,8 @@ void copyPlanarFrameToBuffer(const VideoDecoder& decoder,
                     uint16_t vVal = shift ? static_cast<uint16_t>(vRow[col] << shift) : vRow[col];
                     dstRow[col * 2 + 0] = uVal;
                     dstRow[col * 2 + 1] = vVal;
+                    uSum += uVal;
+                    vSum += vVal;
                 }
             } else {
                 const uint16_t* srcRow = reinterpret_cast<const uint16_t*>(frame->data[1] + static_cast<size_t>(row) * frame->linesize[1]);
@@ -235,13 +252,26 @@ void copyPlanarFrameToBuffer(const VideoDecoder& decoder,
                     if (decoder.swapChromaUV) {
                         dstRow[col * 2 + 0] = vVal;
                         dstRow[col * 2 + 1] = uVal;
+                        uSum += vVal;
+                        vSum += uVal;
                     } else {
                         dstRow[col * 2 + 0] = uVal;
                         dstRow[col * 2 + 1] = vVal;
+                        uSum += uVal;
+                        vSum += vVal;
                     }
                 }
             }
         }
+    }
+    
+    // Print debug info
+    if (frameCount <= 10) {  // Only print first 10 frames to avoid spam
+        double yAvg = sampleCount > 0 ? static_cast<double>(ySum) / sampleCount : 0.0;
+        double uAvg = (chromaWidth * chromaHeight) > 0 ? static_cast<double>(uSum) / (chromaWidth * chromaHeight) : 0.0;
+        double vAvg = (chromaWidth * chromaHeight) > 0 ? static_cast<double>(vSum) / (chromaWidth * chromaHeight) : 0.0;
+        printf("[VideoFrameUtils] Frame %d: %dx%d, bitDepth=%u, shift=%u, Y avg=%.1f, U avg=%.1f, V avg=%.1f\n",
+               frameCount, width, height, bitDepth, shift, yAvg, uAvg, vAvg);
     }
 }
 

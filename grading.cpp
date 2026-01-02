@@ -204,26 +204,45 @@ bool buildGradingOverlay(Engine2D* engine,
     {
         return false;
     }
-    layout.width = 420;
-    layout.height = 880;
-    layout.margin = 20;
-    layout.barHeight = 20;
-    layout.curvesPadding = 16;
-    layout.curvesHeight = 200;
+
+    constexpr float kBaseWidth = 420.0f;
+    constexpr float kBaseHeight = 880.0f;
+    const float scaleW = static_cast<float>(fbWidth) / kBaseWidth;
+    const float scaleH = static_cast<float>(fbHeight) / kBaseHeight;
+    const float scale = std::min(1.0f, std::min(scaleW, scaleH));
+    const auto scaledValue = [&](float value) -> uint32_t {
+        return std::max<uint32_t>(1, static_cast<uint32_t>(std::round(value * scale)));
+    };
+    layout.width = std::max<uint32_t>(1, static_cast<uint32_t>(std::round(kBaseWidth * scale)));
+    layout.height = std::max<uint32_t>(1, static_cast<uint32_t>(std::round(kBaseHeight * scale)));
+    layout.margin = scaledValue(20.0f);
+    layout.barHeight = scaledValue(20.0f);
+    layout.curvesPadding = scaledValue(16.0f);
+    layout.curvesHeight = scaledValue(200.0f);
     layout.curvesX0 = layout.curvesPadding;
     layout.curvesX1 = layout.width > layout.curvesPadding * 2
                           ? layout.width - layout.curvesPadding
                           : layout.width;
     layout.curvesY0 = layout.curvesPadding;
     layout.curvesY1 = layout.curvesY0 + layout.curvesHeight;
-    layout.barYStart = layout.curvesY1 + 32;
-    layout.rowSpacing = 12;
-    layout.handleRadius = 10;
+    layout.barYStart = layout.curvesY1 + scaledValue(32.0f);
+    layout.rowSpacing = scaledValue(12.0f);
+    layout.handleRadius = scaledValue(10.0f);
+    layout.resetWidth = scaledValue(140.0f);
+    layout.resetHeight = scaledValue(36.0f);
+    layout.loadWidth = layout.resetWidth;
+    layout.loadHeight = layout.resetHeight;
+    layout.saveWidth = layout.resetWidth;
+    layout.saveHeight = layout.resetHeight;
+    layout.previewWidth = scaledValue(160.0f);
+    layout.previewHeight = scaledValue(36.0f);
+    layout.detectionWidth = scaledValue(180.0f);
+    layout.detectionHeight = scaledValue(36.0f);
 
     std::vector<uint8_t> pixels(static_cast<size_t>(layout.width) * layout.height * 4, 0);
     drawRect(pixels, layout.width, layout.height, 0, 0, layout.width, layout.height, 0, 0, 0, 180);
 
-    const uint32_t padding = 12;
+    const uint32_t padding = scaledValue(12.0f);
     const uint32_t barWidth = layout.width - padding * 2;
     const uint32_t barYStart = layout.barYStart;
 
@@ -355,7 +374,7 @@ bool buildGradingOverlay(Engine2D* engine,
     }
 
     // Reset button near the bottom
-    const uint32_t buttonPadding = 12;
+    const uint32_t buttonPadding = scaledValue(12.0f);
     const uint32_t totalButtonsHeight = layout.resetHeight + layout.loadHeight + layout.saveHeight +
                                         layout.previewHeight + layout.detectionHeight + buttonPadding * 4;
     const uint32_t barBlockHeight = 12 * (layout.barHeight + layout.rowSpacing);

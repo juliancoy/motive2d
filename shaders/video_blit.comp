@@ -4,8 +4,6 @@
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, rgba8) uniform writeonly image2D outImage;
-layout(set = 0, binding = 1) uniform sampler2D texOverlay;      // rectangle overlay
-layout(set = 0, binding = 2) uniform sampler2D texFpsOverlay;   // text overlay
 layout(set = 0, binding = 3) uniform sampler2D texLuma;
 layout(set = 0, binding = 4) uniform sampler2D texChroma;
 layout(set = 0, binding = 5) uniform CurveUBO {
@@ -28,6 +26,7 @@ layout(push_constant) uniform Push {
     vec2 overlaySize;
     vec2 fpsOverlayOrigin;
     vec2 fpsOverlaySize;
+    vec4 fpsOverlayBackground;
     float scrubProgress;
     float scrubPlaying;
     uint scrubberEnabled;
@@ -40,40 +39,52 @@ layout(push_constant) uniform Push {
     vec4 highlights; // rgb, w unused
 } pushC;
 
-const float kLumaOffset = 16.0 / 255.0;
-const float kLumaScaleLimited = 255.0 / 219.0;
-const float kChromaScaleLimited = 255.0 / 224.0;
+const float kLimitedLumaOffset = 16.0 / 255.0;
+const float kLimitedLumaRange = 219.0 / 255.0;
+const float kLimitedChromaOffset = 128.0 / 255.0;
+const float kLimitedChromaRange = 224.0 / 255.0;
 
-float convertLuma(float ySample, uint rangeFlag) {
-    if (rangeFlag == 0u) {
-        return clamp((ySample - kLumaOffset) * kLumaScaleLimited, 0.0, 1.0);
+float decodeLuma(float value, uint colorRange)
+{
+    if (colorRange == 1u)
+    {
+        return clamp(value, 0.0, 1.0);
     }
-    return ySample;
+    return clamp((value - kLimitedLumaOffset) / kLimitedLumaRange, 0.0, 1.0);
 }
 
-vec2 convertChroma(vec2 uvSample, uint rangeFlag) {
-    if (rangeFlag == 0u) {
-        return (uvSample - vec2(0.5)) * kChromaScaleLimited;
+float decodeChroma(float value, uint colorRange)
+{
+    if (colorRange == 1u)
+    {
+        return clamp(value - 0.5, -0.5, 0.5);
     }
-    return uvSample - vec2(0.5);
+    return clamp((value - kLimitedChromaOffset) / kLimitedChromaRange, -0.5, 0.5);
 }
 
-vec3 yuvToRgb(float y, float u, float v, uint colorSpace) {
-    vec3 rgb;
-    if (colorSpace == 2u) {          // BT.2020
-        rgb.r = y + 1.4746 * v;
-        rgb.g = y - 0.164553 * u - 0.571353 * v;
-        rgb.b = y + 1.8814 * u;
-    } else if (colorSpace == 1u) {   // BT.709
-        rgb.r = y + 1.5748 * v;
-        rgb.g = y - 0.187324 * u - 0.468124 * v;
-        rgb.b = y + 1.8556 * u;
-    } else {                         // BT.601
-        rgb.r = y + 1.402 * v;
-        rgb.g = y - 0.344136 * u - 0.714136 * v;
-        rgb.b = y + 1.772 * u;
+vec3 convertYuvToRgb(vec3 yuv, uint colorSpace)
+{
+    float y = yuv.x;
+    float u = yuv.y;
+    float v = yuv.z;
+    if (colorSpace == 0u)
+    {
+        return vec3(
+            y + 1.4019996 * v,
+            y - 0.344136 * u - 0.714136 * v,
+            y + 1.7720001 * u);
     }
-    return clamp(rgb, 0.0, 1.0);
+    if (colorSpace == 1u)
+    {
+        return vec3(
+            y + 1.5747999 * v,
+            y - 0.18732418 * u - 0.46812421 * v,
+            y + 1.8555999 * u);
+    }
+    return vec3(
+        y + 1.4745998 * v,
+        y - 0.16455278 * u - 0.57135301 * v,
+        y + 1.8813999 * u);
 }
 
 void main() {
@@ -84,9 +95,7 @@ void main() {
 
     vec2 frag = vec2(pixel) + vec2(0.5);
 
-    // Default to background
-    // Start with a solid green so overlay visibility is obvious
-    vec4 color = vec4(0.0, 1.0, 0.0, 1.0);
+    vec4 color = vec4(0.0, 0.0, 0.0, 1.0);
 
     // Sample video in its target region
     bool inVideo = frag.x >= pushC.targetOrigin.x &&
@@ -99,49 +108,12 @@ void main() {
         vec2 videoUV = pushC.cropOrigin + localUV * pushC.cropSize;
 
         float ySample = texture(texLuma, videoUV).r;
-    vec2 uvSample = texture(texChroma, videoUV).rg;
-        vec2 uv = convertChroma(uvSample, pushC.colorRange);
-        float y = convertLuma(ySample, pushC.colorRange);
-        vec3 rgb = yuvToRgb(y, uv.x, uv.y, pushC.colorSpace);
-        // Curve LUT applied per channel (piecewise linear over 256 samples)
-        float lutCoordR = clamp(rgb.r, 0.0, 1.0) * 255.0;
-        float lutCoordG = clamp(rgb.g, 0.0, 1.0) * 255.0;
-        float lutCoordB = clamp(rgb.b, 0.0, 1.0) * 255.0;
-        int lutIdxR = int(floor(lutCoordR));
-        int lutIdxG = int(floor(lutCoordG));
-        int lutIdxB = int(floor(lutCoordB));
-        float lutFractR = fract(lutCoordR);
-        float lutFractG = fract(lutCoordG);
-        float lutFractB = fract(lutCoordB);
-        int blockR = lutIdxR >> 2;
-        int laneR = lutIdxR & 3;
-        int blockR1 = min((lutIdxR + 1) >> 2, 63);
-        int laneR1 = (lutIdxR + 1) & 3;
-        int blockG = lutIdxG >> 2;
-        int laneG = lutIdxG & 3;
-        int blockG1 = min((lutIdxG + 1) >> 2, 63);
-        int laneG1 = (lutIdxG + 1) & 3;
-        int blockB = lutIdxB >> 2;
-        int laneB = lutIdxB & 3;
-        int blockB1 = min((lutIdxB + 1) >> 2, 63);
-        int laneB1 = (lutIdxB + 1) & 3;
-        float lutR = mix(curveUBO.curve[blockR][laneR], curveUBO.curve[blockR1][laneR1], lutFractR);
-        float lutG = mix(curveUBO.curve[blockG][laneG], curveUBO.curve[blockG1][laneG1], lutFractG);
-        float lutB = mix(curveUBO.curve[blockB][laneB], curveUBO.curve[blockB1][laneB1], lutFractB);
-        rgb = vec3(lutR, lutG, lutB);
-        // Apply grading: contrast then exposure, then saturation
-        rgb = rgb * pushC.grading.y + vec3(pushC.grading.x);
-        float luma = dot(rgb, vec3(0.299, 0.587, 0.114));
-        rgb = mix(vec3(luma), rgb, pushC.grading.z);
-        // Shadows / midtones / highlights weighting
-        float shadowW = clamp(1.0 - luma * 2.0, 0.0, 1.0);
-        float highlightW = clamp((luma - 0.5) * 2.0, 0.0, 1.0);
-        float midW = clamp(1.0 - abs(luma - 0.5) * 2.0, 0.0, 1.0);
-        rgb *= mix(vec3(1.0), vec3(pushC.shadows), shadowW);
-        rgb *= mix(vec3(1.0), vec3(pushC.midtones), midW);
-        rgb *= mix(vec3(1.0), vec3(pushC.highlights), highlightW);
-        rgb = clamp(rgb, 0.0, 1.0);
-        color = vec4(rgb, 1.0);
+        vec2 uvSample = texture(texChroma, videoUV).rg;
+        float y = decodeLuma(ySample, pushC.colorRange);
+        float u = decodeChroma(uvSample.r, pushC.colorRange);
+        float v = decodeChroma(uvSample.g, pushC.colorRange);
+        vec3 rgb = convertYuvToRgb(vec3(y, u, v), pushC.colorSpace);
+        color = vec4(clamp(rgb, 0.0, 1.0), 1.0);
     }
 
     // Scrubber (optionally disabled)
@@ -220,32 +192,6 @@ void main() {
                 vec3 iconColor = vec3(1.0);
                 color = mix(color, vec4(iconColor, 1.0), alphaIcon);
             }
-        }
-    }
-
-    // Overlay on top; if enabled and inside overlay region, alpha blend overlay texel
-    if (pushC.overlayEnabled != 0u) {
-        bool inOverlay = frag.x >= pushC.overlayOrigin.x &&
-                         frag.y >= pushC.overlayOrigin.y &&
-                         frag.x <= (pushC.overlayOrigin.x + pushC.overlaySize.x) &&
-                         frag.y <= (pushC.overlayOrigin.y + pushC.overlaySize.y);
-        if (inOverlay) {
-            vec2 overlayUV = (frag - pushC.overlayOrigin) / pushC.overlaySize;
-            vec4 overlaySample = texture(texOverlay, overlayUV);
-            color = mix(color, overlaySample, overlaySample.a);
-        }
-    }
-
-    // FPS overlay (font-rendered) on top of everything else
-    if (pushC.fpsOverlayEnabled != 0u) {
-        bool inFps = frag.x >= pushC.fpsOverlayOrigin.x &&
-                     frag.y >= pushC.fpsOverlayOrigin.y &&
-                     frag.x <= (pushC.fpsOverlayOrigin.x + pushC.fpsOverlaySize.x) &&
-                     frag.y <= (pushC.fpsOverlayOrigin.y + pushC.fpsOverlaySize.y);
-        if (inFps) {
-            vec2 fpsUV = (frag - pushC.fpsOverlayOrigin) / pushC.fpsOverlaySize;
-            vec4 fpsSample = texture(texFpsOverlay, fpsUV);
-            color = mix(color, fpsSample, fpsSample.a);
         }
     }
 

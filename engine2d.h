@@ -96,6 +96,9 @@ public:
     overlay::RectOverlayCompute& getRectOverlayCompute();
     overlay::PoseOverlayCompute& getPoseOverlayCompute();
 
+    void setDecodeDebugEnabled(bool enabled);
+    bool isDecodeDebugEnabled() const;
+
     // Main loop (blocks until all windows closed)
     void run();
 
@@ -130,6 +133,7 @@ public:
     float duration = 0.0f;
     float currentTime = 0.0f;
     bool playing = true;
+    bool decodeDebugEnabled = false;
     
     // Grading and crop state
     std::optional<GradingSettings> gradingSettings;

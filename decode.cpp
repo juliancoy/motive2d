@@ -190,6 +190,12 @@ bool uploadDecodedFrame(VideoResources &video,
         video.descriptors.luma.sampler = video.sampler;
         video.descriptors.chroma.view = video.externalChromaView;
         video.descriptors.chroma.sampler = video.sampler;
+        if (video::debugLoggingEnabled())
+        {
+            std::cout << "[Video2D] Uploaded frame " << video.descriptors.width << "x" << video.descriptors.height
+                      << " chromaDiv=" << video.descriptors.chromaDivX << "x" << video.descriptors.chromaDivY
+                      << " external=" << (video.usingExternal ? "yes" : "no") << std::endl;
+        }
         return true;
     }
 
@@ -274,6 +280,12 @@ bool uploadDecodedFrame(VideoResources &video,
     video.descriptors.luma.sampler = video.sampler;
     video.descriptors.chroma.view = video.chromaImage.view ? video.chromaImage.view : video.lumaImage.view;
     video.descriptors.chroma.sampler = video.sampler;
+    if (video::debugLoggingEnabled())
+    {
+        std::cout << "[Video2D] Uploaded frame " << video.descriptors.width << "x" << video.descriptors.height
+                  << " chromaDiv=" << video.descriptors.chromaDivX << "x" << video.descriptors.chromaDivY
+                  << " external=" << (video.usingExternal ? "yes" : "no") << std::endl;
+    }
     return true;
 }
 
@@ -293,7 +305,12 @@ int runDecodeOnlyBenchmark(const std::filesystem::path &videoPath, const std::op
 
     if (!video::initializeVideoDecoder(videoPath, decoder, params))
     {
-        std::cerr << "[DecodeOnly] Vulkan decode unavailable, falling back to software." << std::endl;
+        std::cerr << "[DecodeOnly] Vulkan decode unavailable";
+        if (!decoder.hardwareInitFailureReason.empty())
+        {
+            std::cerr << " (" << decoder.hardwareInitFailureReason << ")";
+        }
+        std::cerr << ", falling back to software." << std::endl;
         params.implementation = video::DecodeImplementation::Software;
         if (!video::initializeVideoDecoder(videoPath, decoder, params))
         {
@@ -334,9 +351,12 @@ int runDecodeOnlyBenchmark(const std::filesystem::path &videoPath, const std::op
     double seconds = std::chrono::duration<double>(end - start).count();
     double fps = seconds > 0.0 ? static_cast<double>(framesDecoded) / seconds : 0.0;
 
-    std::cout << "[DecodeOnly] Decoded " << framesDecoded << " frames in " << seconds
-              << "s -> " << fps << " fps using " << decoder.implementationName
-              << " over ~" << kBenchmarkSeconds << "s of content" << std::endl;
+    if (video::debugLoggingEnabled())
+    {
+        std::cout << "[DecodeOnly] Decoded " << framesDecoded << " frames in " << seconds
+                  << "s -> " << fps << " fps using " << decoder.implementationName
+                  << " over ~" << kBenchmarkSeconds << "s of content" << std::endl;
+    }
 
     video::cleanupVideoDecoder(decoder);
     return 0;
@@ -371,7 +391,12 @@ bool initializeVideoPlayback(const std::filesystem::path &videoPath,
     }
     if (!video::initializeVideoDecoder(videoPath, state.decoder, params))
     {
-        std::cerr << "[Video2D] Vulkan decode unavailable, falling back to software." << std::endl;
+        std::cerr << "[Video2D] Vulkan decode unavailable";
+        if (!state.decoder.hardwareInitFailureReason.empty())
+        {
+            std::cerr << " (" << state.decoder.hardwareInitFailureReason << ")";
+        }
+        std::cerr << ", falling back to software." << std::endl;
         params.implementation = video::DecodeImplementation::Software;
         if (!video::initializeVideoDecoder(videoPath, state.decoder, params))
         {
@@ -492,8 +517,11 @@ bool initializeVideoPlayback(const std::filesystem::path &videoPath,
     if (swapUvOverride.has_value())
     {
         state.decoder.swapChromaUV = swapUvOverride.value();
-        std::cout << "[Video2D] Forcing UV swap to "
-                  << (state.decoder.swapChromaUV ? "ON" : "OFF") << std::endl;
+        if (video::debugLoggingEnabled())
+        {
+            std::cout << "[Video2D] Forcing UV swap to "
+                      << (state.decoder.swapChromaUV ? "ON" : "OFF") << std::endl;
+        }
     }
 
     state.stagingFrame = video::DecodedFrame{};

@@ -60,6 +60,7 @@ struct DecoderInitParams {
     DecodeImplementation implementation = DecodeImplementation::Software;
     std::optional<VulkanInteropContext> vulkanInterop;
     bool requireGraphicsQueue = true;
+    bool debugLogging = false;
 };
 
 struct VideoDecoder {
@@ -112,6 +113,7 @@ struct VideoDecoder {
     std::atomic<bool> stopRequested{false};
     std::atomic<bool> threadRunning{false};
     std::atomic<int64_t> seekTargetMicroseconds{-1};
+    std::string hardwareInitFailureReason;
 };
 
 std::optional<std::filesystem::path> locateVideoFile(const std::string& filename);
@@ -187,5 +189,7 @@ void applyNv12Overlay(std::vector<uint8_t>& nv12Buffer,
 void applyOverlayToDecodedFrame(std::vector<uint8_t>& buffer,
                                 const VideoDecoder& decoder,
                                 const Nv12Overlay& overlay);
+
+bool debugLoggingEnabled();
 
 } // namespace video

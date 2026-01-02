@@ -34,7 +34,10 @@ bool Engine2D::initialize(bool requireWindow)
     {
         if (!glfwInit())
         {
-            std::cerr << "[Engine2D] Failed to initialize GLFW.\n";
+            const char* errMsg = nullptr;
+            int errCode = glfwGetError(&errMsg);
+            std::cerr << "[Engine2D] Failed to initialize GLFW ("
+                      << errCode << "): " << (errMsg ? errMsg : "unknown") << "\n";
             return false;
         }
         glfwInitialized = true;
@@ -130,6 +133,16 @@ bool Engine2D::loadVideo(const std::filesystem::path& filePath, std::optional<bo
     std::cout << "  Duration: " << duration << " seconds\n";
 
     return true;
+}
+
+void Engine2D::setDecodeDebugEnabled(bool enabled)
+{
+    decodeDebugEnabled = enabled;
+}
+
+bool Engine2D::isDecodeDebugEnabled() const
+{
+    return decodeDebugEnabled;
 }
 
 Engine2D::VideoInfo Engine2D::getVideoInfo() const

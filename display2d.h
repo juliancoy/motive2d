@@ -78,6 +78,8 @@ public:
     void shutdown();
     bool shouldClose() const;
     void pollEvents() const;
+    void setOverlayPassEnabled(bool enabled);
+    void setVideoPassEnabled(bool enabled);
 
     GLFWwindow* window = nullptr;
     int width = 0;
@@ -106,6 +108,10 @@ private:
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline computePipeline = VK_NULL_HANDLE;
+    VkPipeline overlayPipeline = VK_NULL_HANDLE;
+    VkPipeline scrubPipeline = VK_NULL_HANDLE;
+    bool videoPassEnabled = true;
+    bool overlayPassEnabled = true;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets;
 

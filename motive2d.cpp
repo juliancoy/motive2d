@@ -1,5 +1,6 @@
 #include "engine2d.h"
 #include "pose_overlay.hpp"
+#include "subtitle_overlay.hpp"
 #include "video.h"
 
 #include <glm/glm.hpp>
@@ -26,6 +27,8 @@
 #include <ncnn/net.h>
 #include <ncnn/layer.h>
 
+#include <fstream>
+
 namespace
 {
 const std::filesystem::path kDefaultVideoPath("P1090533_main8_hevc_fast.mkv");
@@ -38,7 +41,13 @@ struct CliOptions
     bool showRegion = true;
     bool showGrading = true;
     bool poseEnabled = false;
+    bool overlaysEnabled = true;
     std::filesystem::path poseModelBase = "yolov8n_pose";
+    bool debugDecode = false;
+    bool inputOnly = false;
+    bool skipBlit = false;
+    bool singleFrame = false;
+    std::filesystem::path outputImagePath = "frame.png";
 };
 
 CliOptions parseCliOptions(int argc, char** argv)
@@ -79,6 +88,41 @@ CliOptions parseCliOptions(int argc, char** argv)
         if (arg == "--noSwapUV")
         {
             opts.swapUV = false;
+            continue;
+        }
+        if (arg == "--no-overlays")
+        {
+            opts.overlaysEnabled = false;
+            continue;
+        }
+        if (arg == "--overlays")
+        {
+            opts.overlaysEnabled = true;
+            continue;
+        }
+        if (arg == "--debugDecode")
+        {
+            opts.debugDecode = true;
+            continue;
+        }
+        if (arg == "--input-only")
+        {
+            opts.inputOnly = true;
+            continue;
+        }
+        if (arg == "--skip-blit")
+        {
+            opts.skipBlit = true;
+            continue;
+        }
+        if (arg == "--single-frame" || arg == "--first-frame-only")
+        {
+            opts.singleFrame = true;
+            continue;
+        }
+        if (arg.rfind("--output=", 0) == 0)
+        {
+            opts.outputImagePath = std::filesystem::path(arg.substr(std::string("--output=").size()));
             continue;
         }
         if (arg.rfind("--windows", 0) == 0)
@@ -161,10 +205,23 @@ CliOptions parseCliOptions(int argc, char** argv)
         opts.showGrading = parsedGrading;
     }
 
+    if (opts.inputOnly)
+    {
+        opts.showInput = true;
+        opts.showRegion = false;
+        opts.showGrading = false;
+        opts.overlaysEnabled = false;
+        // Don't skip blit - we still want to see the video in the input window
+        opts.skipBlit = false;
+    }
+
     return opts;
 }
 
+namespace {
 double g_scrollDelta = 0.0;
+}
+
 static void onScroll(GLFWwindow*, double, double yoffset)
 {
     g_scrollDelta += yoffset;
@@ -617,6 +674,108 @@ bool convertNv12ToBgr(const uint8_t* nv12,
     return true;
 }
 
+bool saveRawFrameData(const std::filesystem::path& path, const uint8_t* data, size_t size)
+{
+    if (!data || size == 0)
+    {
+        return false;
+    }
+    
+    std::ofstream file(path, std::ios::binary);
+    if (!file)
+    {
+        std::cerr << "[motive2d] Failed to open file for writing: " << path << "\n";
+        return false;
+    }
+    
+    file.write(reinterpret_cast<const char*>(data), size);
+    if (!file)
+    {
+        std::cerr << "[motive2d] Failed to write frame data to: " << path << "\n";
+        return false;
+    }
+    
+    std::cout << "[motive2d] Saved raw frame data (" << size << " bytes) to: " << path << "\n";
+    return true;
+}
+
+bool savePpmFromYuv(const std::filesystem::path& path, 
+                    const uint8_t* yuvData, 
+                    int width, 
+                    int height,
+                    int bytesPerComponent,
+                    int yPlaneBytes,
+                    int uvPlaneBytes)
+{
+    if (!yuvData || width <= 0 || height <= 0 || bytesPerComponent != 2)
+    {
+        std::cerr << "[motive2d] Unsupported format for PPM conversion\n";
+        return false;
+    }
+    
+    // For p010le (10-bit YUV 4:2:0), we need to convert to 8-bit RGB
+    // This is a simplified conversion for debugging
+    std::vector<uint8_t> rgb(width * height * 3);
+    
+    const uint16_t* yPlane = reinterpret_cast<const uint16_t*>(yuvData);
+    const uint16_t* uvPlane = reinterpret_cast<const uint16_t*>(yuvData + yPlaneBytes);
+    
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            // Simplified YUV to RGB conversion (p010le is 10-bit in 16-bit words)
+            int yIdx = y * width + x;
+            int uvIdx = (y / 2) * (width / 2) + (x / 2);
+            
+            // Scale 10-bit to 8-bit (shift right by 2)
+            uint8_t Y = static_cast<uint8_t>(std::min(255, yPlane[yIdx] >> 2));
+            uint8_t U = static_cast<uint8_t>(std::min(255, uvPlane[uvIdx * 2] >> 2));
+            uint8_t V = static_cast<uint8_t>(std::min(255, uvPlane[uvIdx * 2 + 1] >> 2));
+            
+            // Simple YUV to RGB conversion (ITU-R BT.601)
+            int C = Y - 16;
+            int D = U - 128;
+            int E = V - 128;
+            
+            int r = std::clamp((298 * C + 409 * E + 128) >> 8, 0, 255);
+            int g = std::clamp((298 * C - 100 * D - 208 * E + 128) >> 8, 0, 255);
+            int b = std::clamp((298 * C + 516 * D + 128) >> 8, 0, 255);
+            
+            int idx = (y * width + x) * 3;
+            rgb[idx] = static_cast<uint8_t>(r);
+            rgb[idx + 1] = static_cast<uint8_t>(g);
+            rgb[idx + 2] = static_cast<uint8_t>(b);
+        }
+    }
+    
+    // Write PPM file
+    std::ofstream file(path, std::ios::binary);
+    if (!file)
+    {
+        std::cerr << "[motive2d] Failed to open PPM file for writing: " << path << "\n";
+        return false;
+    }
+    
+    // PPM header
+    file << "P6\n" << width << " " << height << "\n255\n";
+    if (!file)
+    {
+        std::cerr << "[motive2d] Failed to write PPM header\n";
+        return false;
+    }
+    
+    file.write(reinterpret_cast<const char*>(rgb.data()), rgb.size());
+    if (!file)
+    {
+        std::cerr << "[motive2d] Failed to write PPM data\n";
+        return false;
+    }
+    
+    std::cout << "[motive2d] Saved PPM image (" << width << "x" << height << ") to: " << path << "\n";
+    return true;
+}
+
 void buildDetectionEntries(const std::vector<PoseObject>& objects,
                            int frameWidth,
                            int frameHeight,
@@ -685,6 +844,22 @@ int main(int argc, char** argv)
 {
     CliOptions cli = parseCliOptions(argc, argv);
     PoseOverlay poseOverlay(cli.videoPath);
+    SubtitleOverlay subtitleOverlay;
+    SubtitleOverlayResources subtitleOverlayResources;
+    bool subtitleOverlayLoaded = false;
+    if (!cli.videoPath.empty())
+    {
+        const std::filesystem::path subtitlePath =
+            cli.videoPath.parent_path() / (cli.videoPath.stem().string() + ".json");
+        if (std::filesystem::exists(subtitlePath))
+        {
+            subtitleOverlayLoaded = subtitleOverlay.load(subtitlePath);
+            if (!subtitleOverlayLoaded)
+            {
+                std::cout << "[subtitle] Failed to load subtitles from " << subtitlePath << "\n";
+            }
+        }
+    }
 
     std::unique_ptr<PoseDetector> poseDetector;
     if (cli.poseEnabled)
@@ -710,6 +885,7 @@ int main(int argc, char** argv)
     {
         return 1;
     }
+    engine.setDecodeDebugEnabled(cli.debugDecode);
 
     if (!cli.showInput && !cli.showRegion && !cli.showGrading)
     {
@@ -723,13 +899,18 @@ int main(int argc, char** argv)
 
     if (cli.showInput)
     {
-        inputWindow = engine.createWindow(1280, 720, "Motive Video 2D");
+        inputWindow = engine.createWindow(1280, 720, "Input");
         if (!inputWindow)
         {
             std::cerr << "[motive2d] Failed to create main window.\n";
             return 1;
         }
         glfwSetScrollCallback(inputWindow->window, onScroll);
+        inputWindow->setOverlayPassEnabled(cli.overlaysEnabled);
+        if (cli.skipBlit)
+        {
+            inputWindow->setVideoPassEnabled(false);
+        }
     }
     if (cli.showRegion)
     {
@@ -739,6 +920,11 @@ int main(int argc, char** argv)
             std::cerr << "[motive2d] Failed to create region window.\n";
             return 1;
         }
+        regionWindow->setOverlayPassEnabled(cli.overlaysEnabled);
+        if (cli.skipBlit)
+        {
+            regionWindow->setVideoPassEnabled(false);
+        }
     }
     if (cli.showGrading)
     {
@@ -747,6 +933,11 @@ int main(int argc, char** argv)
         {
             std::cerr << "[motive2d] Failed to create grading window.\n";
             return 1;
+        }
+        gradingWindow->setOverlayPassEnabled(cli.overlaysEnabled);
+        if (cli.skipBlit)
+        {
+            gradingWindow->setVideoPassEnabled(false);
         }
     }
 
@@ -866,6 +1057,7 @@ int main(int argc, char** argv)
     };
 
     bool shouldExit = false;
+    bool frameCaptured = false;
     while (!shouldExit)
     {
         if (inputWindow)
@@ -886,6 +1078,65 @@ int main(int argc, char** argv)
             (gradingWindow && gradingWindow->shouldClose()))
         {
             break;
+        }
+
+        // Single frame capture logic
+        if (cli.singleFrame && !frameCaptured)
+        {
+            const auto& decoder = playbackState.decoder;
+            if (!playbackState.pendingFrames.empty())
+            {
+                const auto& frame = playbackState.pendingFrames.front();
+                const size_t requiredBytes = static_cast<size_t>(decoder.yPlaneBytes) + static_cast<size_t>(decoder.uvPlaneBytes);
+                if (frame.buffer.size() >= requiredBytes)
+                {
+                    // Save raw frame data
+                    std::filesystem::path rawPath = cli.outputImagePath;
+                    rawPath.replace_extension(".raw");
+                    if (saveRawFrameData(rawPath, frame.buffer.data(), frame.buffer.size()))
+                    {
+                        std::cout << "[motive2d] Saved raw frame data to: " << rawPath << "\n";
+                    }
+                    
+                    // Save PPM image (RGB conversion)
+                    std::filesystem::path ppmPath = cli.outputImagePath;
+                    ppmPath.replace_extension(".ppm");
+                    if (savePpmFromYuv(ppmPath, 
+                                       frame.buffer.data(),
+                                       decoder.width,
+                                       decoder.height,
+                                       decoder.bytesPerComponent,
+                                       decoder.yPlaneBytes,
+                                       decoder.uvPlaneBytes))
+                    {
+                        std::cout << "[motive2d] Saved PPM image to: " << ppmPath << "\n";
+                    }
+                    
+                    // Also save as text file with metadata
+                    std::filesystem::path metaPath = cli.outputImagePath;
+                    metaPath.replace_extension(".txt");
+                    std::ofstream meta(metaPath);
+                    if (meta)
+                    {
+                        meta << "Frame metadata:\n";
+                        meta << "  Width: " << decoder.width << "\n";
+                        meta << "  Height: " << decoder.height << "\n";
+                        meta << "  Format: " << static_cast<int>(decoder.outputFormat) << "\n";
+                        meta << "  Bytes per component: " << decoder.bytesPerComponent << "\n";
+                        meta << "  Y plane bytes: " << decoder.yPlaneBytes << "\n";
+                        meta << "  UV plane bytes: " << decoder.uvPlaneBytes << "\n";
+                        meta << "  Total frame size: " << frame.buffer.size() << "\n";
+                        meta << "  PTS: " << frame.ptsSeconds << "\n";
+                        meta.close();
+                        std::cout << "[motive2d] Saved frame metadata to: " << metaPath << "\n";
+                    }
+                    
+                    frameCaptured = true;
+                    shouldExit = true;
+                    std::cout << "[motive2d] Single frame captured and saved. Exiting.\n";
+                    break;
+                }
+            }
         }
 
         if (inputWindow)
@@ -1205,7 +1456,7 @@ int main(int argc, char** argv)
             }
         }
 
-        bool rebuildGradingOverlay = gradingOverlayDirty;
+        bool sizeChanged = false;
         uint32_t gradingWindowFbW = 0;
         uint32_t gradingWindowFbH = 0;
         if (gradingWindow)
@@ -1219,32 +1470,57 @@ int main(int argc, char** argv)
             {
                 gradingFbWidth = gradingWindowFbW;
                 gradingFbHeight = gradingWindowFbH;
-                rebuildGradingOverlay = true;
+                sizeChanged = true;
             }
         }
-
+        bool rebuildGradingOverlay = gradingOverlayDirty || sizeChanged;
         if (gradingWindow && rebuildGradingOverlay)
         {
-            gradingOverlayDirty = grading::buildGradingOverlay(&engine,
-                                                               gradingSettings,
-                                                               gradingOverlayImage,
-                                                               gradingOverlayInfo,
-                                                               gradingFbWidth,
-                                                               gradingFbHeight,
-                                                               gradingLayout,
-                                                               gradingPreviewEnabled,
-                                                               detectionEnabled);
-            gradingOverlayInfo.overlay.sampler = playbackState.overlay.sampler;
+            bool success = grading::buildGradingOverlay(&engine,
+                                                        gradingSettings,
+                                                        gradingOverlayImage,
+                                                        gradingOverlayInfo,
+                                                        gradingFbWidth,
+                                                        gradingFbHeight,
+                                                        gradingLayout,
+                                                        gradingPreviewEnabled,
+                                                        detectionEnabled);
+            if (success)
+            {
+                gradingOverlayInfo.overlay.sampler = playbackState.overlay.sampler;
+                gradingOverlayDirty = false;
+            }
+            else
+            {
+                gradingOverlayDirty = true;
+            }
         }
 
         engine.refreshFpsOverlay();
 
+        if (subtitleOverlayLoaded && cli.overlaysEnabled)
+        {
+            updateSubtitleOverlay(&engine,
+                                  subtitleOverlayResources,
+                                  subtitleOverlay,
+                                  playbackSeconds,
+                                  fbWidth,
+                                  fbHeight,
+                                  overlayRectCenter,
+                                  overlayRectSize,
+                                  playbackState.overlay.sampler,
+                                  playbackState.overlay.sampler,
+                                  2);
+        }
+
         const ColorAdjustments* adjustmentsPtr = gradingPreviewEnabled ? &adjustments : nullptr;
+        const OverlayImageInfo& fpsOverlayInfoToUse =
+            subtitleOverlayResources.info.enabled ? subtitleOverlayResources.info : playbackState.fpsOverlay.info;
         if (inputWindow)
         {
             inputWindow->renderFrame(playbackState.video.descriptors,
                                      playbackState.overlay.info,
-                                     playbackState.fpsOverlay.info,
+                                     fpsOverlayInfoToUse,
                                      playbackState.colorInfo,
                                      scrubProgressUi,
                                      playing ? 1.0f : 0.0f,
@@ -1290,6 +1566,7 @@ int main(int argc, char** argv)
     }
 
     overlay::destroyImageResource(&engine, gradingOverlayImage);
+    destroySubtitleOverlayResources(&engine, subtitleOverlayResources);
     overlay::destroyImageResource(&engine, blackLuma);
     overlay::destroyImageResource(&engine, blackChroma);
     if (blackSampler != VK_NULL_HANDLE && blackSampler != playbackState.overlay.sampler)

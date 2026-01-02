@@ -334,31 +334,42 @@ bool uploadImageData(Engine2D* engine,
     }
 
     bool recreated = false;
-    if (!ensureImageResource(engine, res, width, height, format, recreated))
+    if (!ensureImageResource(engine, res, width, height, format, recreated,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
     {
         return false;
     }
 
-    VkBuffer staging = VK_NULL_HANDLE;
-    VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
-    engine->createBuffer(static_cast<VkDeviceSize>(dataSize),
+    // Use a staging buffer for optimal performance
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height * 4;
+    engine->createBuffer(imageSize,
                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                         staging,
-                         stagingMemory);
+                         stagingBuffer,
+                         stagingBufferMemory);
 
     void* mapped = nullptr;
-    vkMapMemory(engine->logicalDevice, stagingMemory, 0, static_cast<VkDeviceSize>(dataSize), 0, &mapped);
-    std::memcpy(mapped, data, dataSize);
-    vkUnmapMemory(engine->logicalDevice, stagingMemory);
+    vkMapMemory(engine->logicalDevice, stagingBufferMemory, 0, imageSize, 0, &mapped);
+    if (mapped)
+    {
+        std::memcpy(mapped, data, dataSize);
+        vkUnmapMemory(engine->logicalDevice, stagingBufferMemory);
+    }
+    else
+    {
+        vkDestroyBuffer(engine->logicalDevice, stagingBuffer, nullptr);
+        vkFreeMemory(engine->logicalDevice, stagingBufferMemory, nullptr);
+        std::cerr << "[Video2D] Failed to map staging buffer memory." << std::endl;
+        return false;
+    }
 
-    VkImageLayout oldLayout = (!recreated && res.view != VK_NULL_HANDLE)
-                                  ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                                  : VK_IMAGE_LAYOUT_UNDEFINED;
-    copyBufferToImage(engine, staging, res.image, oldLayout, width, height);
+    copyBufferToImage(engine, stagingBuffer, res.image, VK_IMAGE_LAYOUT_UNDEFINED, width, height);
 
-    vkDestroyBuffer(engine->logicalDevice, staging, nullptr);
-    vkFreeMemory(engine->logicalDevice, stagingMemory, nullptr);
+    vkDestroyBuffer(engine->logicalDevice, stagingBuffer, nullptr);
+    vkFreeMemory(engine->logicalDevice, stagingBufferMemory, nullptr);
+
     return true;
 }
 
@@ -377,7 +388,7 @@ void runPoseOverlayCompute(Engine2D* engine,
 {
     bool recreated = false;
     if (!ensureImageResource(engine, target, width, height, VK_FORMAT_R8G8B8A8_UNORM, recreated,
-                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))
     {
         return;
     }
@@ -549,7 +560,7 @@ void runRectOverlayCompute(Engine2D* engine,
 {
     bool recreated = false;
     if (!ensureImageResource(engine, target, width, height, VK_FORMAT_R8G8B8A8_UNORM, recreated,
-                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))
     {
         return;
     }
@@ -702,7 +713,7 @@ bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
     std::vector<char> shaderCode;
     try
     {
-        shaderCode = readSPIRVFile("shaders/overlay_rect.comp.spv");
+        shaderCode = readSPIRVFile("shaders/overlay_blit.comp.spv");
     }
     catch (const std::exception& ex)
     {
@@ -841,7 +852,7 @@ bool initializePoseOverlayCompute(Engine2D* engine, PoseOverlayCompute& comp)
     std::vector<char> shaderCode;
     try
     {
-        shaderCode = readSPIRVFile("shaders/overlay_pose.comp.spv");
+        shaderCode = readSPIRVFile("shaders/overlay_blit.comp.spv");
     }
     catch (const std::exception& ex)
     {

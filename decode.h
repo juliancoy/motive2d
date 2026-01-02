@@ -12,6 +12,7 @@
 
 #include "video.h"
 #include "overlay.hpp"
+#include "subtitle_overlay.hpp"
 
 // Forward declarations
 class Engine2D;
@@ -35,6 +36,7 @@ struct VideoPlaybackState
     overlay::OverlayResources overlay;
     overlay::ImageResource poseOverlayImage;
     overlay::FpsOverlayResources fpsOverlay;
+    SubtitleOverlayResources subtitleOverlay;
     video::VideoColorInfo colorInfo;
     std::deque<video::DecodedFrame> pendingFrames;
     video::DecodedFrame stagingFrame;

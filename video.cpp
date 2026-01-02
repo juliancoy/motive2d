@@ -9,6 +9,7 @@
 #include <chrono>
 #include <thread>
 #include <fstream>
+#include <cstdlib>
 #include <algorithm>
 #include <limits>
 #include <system_error>
@@ -31,6 +32,9 @@ namespace {
 
 using video::DecodeImplementation;
 using video::VideoDecoder;
+
+#define VIDEO_DEBUG_LOG(statement) \
+    do { if (video::debugLoggingEnabled()) { statement; } } while (0)
 
 std::string ffmpegErrorString(int errnum)
 {
@@ -146,11 +150,30 @@ int determineStreamBitDepth(const AVStream* videoStream, const AVCodecContext* c
     return 8;
 }
 
-AVPixelFormat pickPreferredSwPixelFormat(int bitDepth)
+AVPixelFormat pickPreferredSwPixelFormat(int bitDepth, AVPixelFormat sourceFormat)
 {
+    // Check if the source format is already a good software format
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(sourceFormat);
+    if (desc) {
+        // If source is already a software format, use it
+        if (!(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+            return sourceFormat;
+        }
+    }
+    
+    // Otherwise, choose based on bit depth
 #if defined(AV_PIX_FMT_P010)
     if (bitDepth > 8)
     {
+        // For 10-bit, try to match the chroma subsampling
+        if (desc) {
+            // Check if source is 4:2:2
+            if (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 0) {
+                // 4:2:2 - use YUV422P10LE if available
+                return AV_PIX_FMT_YUV422P10LE;
+            }
+            // 4:2:0 or other - use P010
+        }
         return AV_PIX_FMT_P010;
     }
 #endif
@@ -202,11 +225,18 @@ bool trySetupHardwareDecoder(VideoDecoder& decoder,
                              AVHWDeviceType type,
                              DecodeImplementation implementation,
                              const std::optional<video::VulkanInteropContext>& vulkanInterop,
-                             bool requireGraphicsQueue)
+                             bool requireGraphicsQueue,
+                             std::string* failureReason)
 {
+    VIDEO_DEBUG_LOG(std::cout << "[Video] Trying " << hwDeviceTypeName(type) << " hardware decode for codec "
+                              << codec->name << "..." << std::endl);
     AVPixelFormat hwFormat = AV_PIX_FMT_NONE;
     if (!codecSupportsDevice(codec, type, hwFormat))
     {
+        if (failureReason)
+        {
+            *failureReason = std::string("Codec lacks hardware configuration for ") + hwDeviceTypeName(type);
+        }
         return false;
     }
 
@@ -217,6 +247,10 @@ bool trySetupHardwareDecoder(VideoDecoder& decoder,
         if (!hwDeviceCtx)
         {
             std::cerr << "[Video] Failed to allocate Vulkan hwdevice context." << std::endl;
+            if (failureReason)
+            {
+                *failureReason = "Failed to allocate Vulkan hardware context.";
+            }
             return false;
         }
 
@@ -231,8 +265,13 @@ bool trySetupHardwareDecoder(VideoDecoder& decoder,
         int err = av_hwdevice_ctx_init(hwDeviceCtx);
         if (err < 0)
         {
+            const std::string errMsg = ffmpegErrorString(err);
             std::cerr << "[Video] Failed to init Vulkan hwdevice with external context: "
-                      << ffmpegErrorString(err) << std::endl;
+                      << errMsg << std::endl;
+            if (failureReason)
+            {
+                *failureReason = std::string("Failed to initialize Vulkan hwdevice: ") + errMsg;
+            }
             av_buffer_unref(&hwDeviceCtx);
             return false;
         }
@@ -248,8 +287,14 @@ bool trySetupHardwareDecoder(VideoDecoder& decoder,
         int err = av_hwdevice_ctx_create(&hwDeviceCtx, type, nullptr, nullptr, 0);
         if (err < 0)
         {
+            const std::string errMsg = ffmpegErrorString(err);
             std::cerr << "[Video] Failed to create " << hwDeviceTypeName(type)
-                      << " hardware context: " << ffmpegErrorString(err) << std::endl;
+                      << " hardware context: " << errMsg << std::endl;
+            if (failureReason)
+            {
+                *failureReason = std::string("Failed to create ") + hwDeviceTypeName(type)
+                                 + " hardware context: " + errMsg;
+            }
             return false;
         }
     }
@@ -262,19 +307,23 @@ bool trySetupHardwareDecoder(VideoDecoder& decoder,
     decoder.codecCtx->hw_device_ctx = av_buffer_ref(decoder.hwDeviceCtx);
     if (!decoder.codecCtx->hw_device_ctx)
     {
-        std::cerr << "[Video] Failed to reference hardware context." << std::endl;
-        av_buffer_unref(&decoder.hwDeviceCtx);
-        decoder.hwDeviceCtx = nullptr;
-        return false;
-    }
+            std::cerr << "[Video] Failed to reference hardware context." << std::endl;
+            if (failureReason)
+            {
+                *failureReason = "Failed to reference hardware context.";
+            }
+            av_buffer_unref(&decoder.hwDeviceCtx);
+            decoder.hwDeviceCtx = nullptr;
+            return false;
+        }
 
     decoder.implementation = implementation;
     std::string label = implementation == DecodeImplementation::Vulkan
                             ? "Vulkan"
                             : hwDeviceTypeName(type);
     decoder.implementationName = label + " hardware";
-    std::cout << "[Video] " << label << " decoder reports hardware pixel format "
-              << pixelFormatDescription(hwFormat) << std::endl;
+    VIDEO_DEBUG_LOG(std::cout << "[Video] " << label << " decoder reports hardware pixel format "
+                              << pixelFormatDescription(hwFormat) << std::endl);
     return true;
 }
 
@@ -282,18 +331,21 @@ bool configureDecodeImplementation(VideoDecoder& decoder,
                                    const AVCodec* codec,
                                    DecodeImplementation implementation,
                                    const std::optional<video::VulkanInteropContext>& vulkanInterop,
-                                   bool requireGraphicsQueue)
+                                   bool requireGraphicsQueue,
+                                   bool debugLogging)
 {
     decoder.implementation = DecodeImplementation::Software;
     decoder.implementationName = "Software (CPU)";
     decoder.hwDeviceType = AV_HWDEVICE_TYPE_NONE;
     decoder.hwPixelFormat = AV_PIX_FMT_NONE;
-
     if (implementation == DecodeImplementation::Software)
     {
         return true;
     }
 
+    auto attemptStart = std::chrono::steady_clock::now();
+    std::string failureReason;
+    decoder.hardwareInitFailureReason.clear();
     if (implementation == DecodeImplementation::Vulkan)
     {
         if (trySetupHardwareDecoder(decoder,
@@ -301,12 +353,31 @@ bool configureDecodeImplementation(VideoDecoder& decoder,
                                     AV_HWDEVICE_TYPE_VULKAN,
                                     implementation,
                                     vulkanInterop,
-                                    requireGraphicsQueue))
+                                    requireGraphicsQueue,
+                                    &failureReason))
         {
+            auto attemptDuration =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                       attemptStart);
+            VIDEO_DEBUG_LOG(std::cout << "[Video] Selected decode implementation: " << decoder.implementationName << std::endl);
+            if (debugLogging)
+            {
+                VIDEO_DEBUG_LOG(std::cout << "[Video] Hardware decode setup completed in " << attemptDuration.count()
+                                        << " ms." << std::endl);
+            }
             return true;
         }
-        std::cerr << "[Video] Vulkan decode not available for this codec/hardware combination."
-                  << std::endl;
+        decoder.hardwareInitFailureReason = failureReason;
+        auto attemptDuration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                   attemptStart);
+        std::cerr << "[Video] Vulkan decode not available for this codec/hardware combination. "
+                  << "Selected hardware attempt took " << attemptDuration.count() << " ms";
+        if (!failureReason.empty())
+        {
+            std::cerr << " (reason: " << failureReason << ")";
+        }
+        std::cerr << std::endl;
         return false;
     }
 
@@ -315,6 +386,15 @@ bool configureDecodeImplementation(VideoDecoder& decoder,
 }
 
 } // namespace
+
+namespace video
+{
+bool debugLoggingEnabled()
+{
+    static const bool enabled = (::getenv("MOTIVE2D_DEBUG_VIDEO") != nullptr);
+    return enabled;
+}
+} // namespace video
 
 namespace video {
 
@@ -366,7 +446,12 @@ bool initializeVideoDecoder(const std::filesystem::path& videoPath,
         return false;
     }
 
-    if (!configureDecodeImplementation(decoder, codec, initParams.implementation, initParams.vulkanInterop, initParams.requireGraphicsQueue))
+    if (!configureDecodeImplementation(decoder,
+                                       codec,
+                                       initParams.implementation,
+                                       initParams.vulkanInterop,
+                                       initParams.requireGraphicsQueue,
+                                       initParams.debugLogging))
     {
         return false;
     }
@@ -374,11 +459,13 @@ bool initializeVideoDecoder(const std::filesystem::path& videoPath,
     const int streamBitDepth = determineStreamBitDepth(videoStream, decoder.codecCtx);
     if (decoder.implementation != DecodeImplementation::Software)
     {
-        decoder.requestedSwPixelFormat = pickPreferredSwPixelFormat(streamBitDepth);
+        // Get the source pixel format from the stream
+        AVPixelFormat sourceFormat = static_cast<AVPixelFormat>(videoStream->codecpar->format);
+        decoder.requestedSwPixelFormat = pickPreferredSwPixelFormat(streamBitDepth, sourceFormat);
         decoder.codecCtx->sw_pix_fmt = decoder.requestedSwPixelFormat;
-        std::cout << "[Video] Requesting " << pixelFormatDescription(decoder.requestedSwPixelFormat)
-                  << " software frames from " << decoder.implementationName
-                  << " decoder (bit depth " << streamBitDepth << ")" << std::endl;
+        VIDEO_DEBUG_LOG(std::cout << "[Video] Requesting " << pixelFormatDescription(decoder.requestedSwPixelFormat)
+                                << " software frames from " << decoder.implementationName
+                                << " decoder (bit depth " << streamBitDepth << ")" << std::endl);
     }
     else
     {
@@ -435,31 +522,31 @@ bool initializeVideoDecoder(const std::filesystem::path& videoPath,
         return false;
     }
 
-    std::cout << "[Video] Stream pixel format: " << pixelFormatDescription(decoder.sourcePixelFormat)
-              << " -> outputFormat=" << static_cast<int>(decoder.outputFormat)
-              << " chromaDiv=" << decoder.chromaDivX << "x" << decoder.chromaDivY
-              << " bytesPerComponent=" << decoder.bytesPerComponent
-              << " bitDepth=" << decoder.bitDepth
-              << " swapUV=" << (decoder.swapChromaUV ? "yes" : "no")
-              << " colorSpace=" << colorSpaceName(decoder.colorSpace)
-              << " colorRange=" << colorRangeName(decoder.colorRange)
-              << " implementation=" << decoder.implementationName
-              << std::endl;
+    VIDEO_DEBUG_LOG(std::cout << "[Video] Stream pixel format: " << pixelFormatDescription(decoder.sourcePixelFormat)
+                              << " -> outputFormat=" << static_cast<int>(decoder.outputFormat)
+                              << " chromaDiv=" << decoder.chromaDivX << "x" << decoder.chromaDivY
+                              << " bytesPerComponent=" << decoder.bytesPerComponent
+                              << " bitDepth=" << decoder.bitDepth
+                              << " swapUV=" << (decoder.swapChromaUV ? "yes" : "no")
+                              << " colorSpace=" << colorSpaceName(decoder.colorSpace)
+                              << " colorRange=" << colorRangeName(decoder.colorRange)
+                              << " implementation=" << decoder.implementationName
+                              << std::endl);
 
     AVRational frameRate = av_guess_frame_rate(decoder.formatCtx, videoStream, nullptr);
     double fps = (frameRate.num != 0 && frameRate.den != 0) ? av_q2d(frameRate) : 30.0;
     decoder.fps = fps > 0.0 ? fps : 30.0;
-    std::cout << "[Video] Using " << decoder.implementationName;
+    VIDEO_DEBUG_LOG(std::cout << "[Video] Using " << decoder.implementationName);
     if (decoder.implementation != DecodeImplementation::Software)
     {
-        std::cout << " (hw " << pixelFormatName(decoder.hwPixelFormat);
+        VIDEO_DEBUG_LOG(std::cout << " (hw " << pixelFormatName(decoder.hwPixelFormat));
         if (decoder.requestedSwPixelFormat != AV_PIX_FMT_NONE)
         {
-            std::cout << " -> sw " << pixelFormatName(decoder.requestedSwPixelFormat);
+            VIDEO_DEBUG_LOG(std::cout << " -> sw " << pixelFormatName(decoder.requestedSwPixelFormat));
         }
-        std::cout << ")";
+        VIDEO_DEBUG_LOG(std::cout << ")");
     }
-    std::cout << " decoder" << std::endl;
+    VIDEO_DEBUG_LOG(std::cout << " decoder" << std::endl);
     return true;
 }
 
@@ -483,7 +570,7 @@ bool seekVideoDecoder(VideoDecoder& decoder, double targetSeconds)
         stopAsyncDecoding(decoder);
     }
 
-    std::cout << "[Video] Seeking to " << targetSeconds << "s..." << std::endl;
+    VIDEO_DEBUG_LOG(std::cout << "[Video] Seeking to " << targetSeconds << "s..." << std::endl);
     decoder.seekTargetMicroseconds.store(static_cast<int64_t>(targetSeconds * 1000000.0));
 
     // Convert target seconds to the stream's timebase
@@ -539,7 +626,7 @@ bool decodeNextFrame(VideoDecoder& decoder, DecodedFrame& decodedFrame, bool cop
 {
     if (decoder.finished.load())
     {
-        std::cout << "[Video] decodeNextFrame: decoder finished, returning false" << std::endl;
+    VIDEO_DEBUG_LOG(std::cout << "[Video] decodeNextFrame: decoder finished, returning false" << std::endl);
         return false;
     }
 
@@ -558,8 +645,8 @@ bool decodeNextFrame(VideoDecoder& decoder, DecodedFrame& decodedFrame, bool cop
             
             if (readDuration.count() > 100 && callCount % 10 == 0)
             {
-                std::cout << "[Video] decodeNextFrame: av_read_frame took " << readDuration.count() 
-                          << " ms (call " << callCount << ")" << std::endl;
+                VIDEO_DEBUG_LOG(std::cout << "[Video] decodeNextFrame: av_read_frame took " << readDuration.count() 
+                                          << " ms (call " << callCount << ")" << std::endl);
             }
             
             if (readResult >= 0)
@@ -576,8 +663,8 @@ bool decodeNextFrame(VideoDecoder& decoder, DecodedFrame& decodedFrame, bool cop
                     
                     if (sendDuration.count() > 50 && callCount % 10 == 0)
                     {
-                        std::cout << "[Video] decodeNextFrame: avcodec_send_packet took " 
-                                  << sendDuration.count() << " ms" << std::endl;
+                        VIDEO_DEBUG_LOG(std::cout << "[Video] decodeNextFrame: avcodec_send_packet took " 
+                                                  << sendDuration.count() << " ms" << std::endl);
                     }
                 }
                 av_packet_unref(decoder.packet);
@@ -586,7 +673,7 @@ bool decodeNextFrame(VideoDecoder& decoder, DecodedFrame& decodedFrame, bool cop
             {
                 av_packet_unref(decoder.packet);
                 decoder.draining = true;
-                std::cout << "[Video] decodeNextFrame: starting drain mode" << std::endl;
+                VIDEO_DEBUG_LOG(std::cout << "[Video] decodeNextFrame: starting drain mode" << std::endl);
                 avcodec_send_packet(decoder.codecCtx, nullptr);
             }
         }
@@ -598,9 +685,9 @@ bool decodeNextFrame(VideoDecoder& decoder, DecodedFrame& decodedFrame, bool cop
         
         if (receiveDuration.count() > 100 && callCount % 10 == 0)
         {
-            std::cout << "[Video] decodeNextFrame: avcodec_receive_frame took " 
-                      << receiveDuration.count() << " ms, result=" << receiveResult 
-                      << " (call " << callCount << ")" << std::endl;
+            VIDEO_DEBUG_LOG(std::cout << "[Video] decodeNextFrame: avcodec_receive_frame took " 
+                                      << receiveDuration.count() << " ms, result=" << receiveResult 
+                                      << " (call " << callCount << ")" << std::endl);
         }
         
         if (receiveResult == 0)
@@ -629,8 +716,8 @@ bool decodeNextFrame(VideoDecoder& decoder, DecodedFrame& decodedFrame, bool cop
                     return false;
                 }
 
-                std::cout << "[Video] Decoder output pixel format changed to "
-                          << pixelFormatDescription(frameFormat) << std::endl;
+                VIDEO_DEBUG_LOG(std::cout << "[Video] Decoder output pixel format changed to "
+                                          << pixelFormatDescription(frameFormat) << std::endl);
             }
 
             // If Vulkan hardware frames are unavailable, force a CPU copy so playback still works.
@@ -733,8 +820,8 @@ bool decodeNextFrame(VideoDecoder& decoder, DecodedFrame& decodedFrame, bool cop
             auto totalDuration = std::chrono::duration_cast<std::chrono::milliseconds>(decodeEnd - decodeStart);
             if (totalDuration.count() > 200 && callCount % 5 == 0)
             {
-                std::cout << "[Video] decodeNextFrame: successfully decoded frame " << callCount 
-                          << " in " << totalDuration.count() << " ms total" << std::endl;
+                VIDEO_DEBUG_LOG(std::cout << "[Video] decodeNextFrame: successfully decoded frame " << callCount 
+                                          << " in " << totalDuration.count() << " ms total" << std::endl);
             }
             
             return true;
@@ -745,7 +832,7 @@ bool decodeNextFrame(VideoDecoder& decoder, DecodedFrame& decodedFrame, bool cop
         }
         else if (receiveResult == AVERROR_EOF)
         {
-            std::cout << "[Video] decodeNextFrame: EOF reached after " << callCount << " calls" << std::endl;
+            VIDEO_DEBUG_LOG(std::cout << "[Video] decodeNextFrame: EOF reached after " << callCount << " calls" << std::endl);
             decoder.finished.store(true);
             return false;
         }
@@ -761,8 +848,8 @@ namespace
 {
 void asyncDecodeLoop(VideoDecoder* decoder)
 {
-    std::cout << "[Video] asyncDecodeLoop started, stopRequested=" << decoder->stopRequested.load() 
-              << ", bufferSize=" << decoder->bufferSize << std::endl;
+    VIDEO_DEBUG_LOG(std::cout << "[Video] asyncDecodeLoop started, stopRequested=" << decoder->stopRequested.load() 
+                              << ", bufferSize=" << decoder->bufferSize << std::endl);
     
     video::DecodedFrame localFrame;
     localFrame.buffer.reserve(decoder->bufferSize);
@@ -782,16 +869,16 @@ void asyncDecodeLoop(VideoDecoder* decoder)
         
         if (!decodeSuccess)
         {
-            std::cout << "[Video] asyncDecodeLoop: decodeNextFrame returned false at frame " 
-                      << frameCount << ", finished=" << decoder->finished.load() 
-                      << ", decode took " << decodeDuration.count() << " ms" << std::endl;
+            VIDEO_DEBUG_LOG(std::cout << "[Video] asyncDecodeLoop: decodeNextFrame returned false at frame " 
+                                      << frameCount << ", finished=" << decoder->finished.load() 
+                                      << ", decode took " << decodeDuration.count() << " ms" << std::endl);
             break;
         }
 
         int64_t currentSeekTarget = decoder->seekTargetMicroseconds.load();
         if (currentSeekTarget >= 0)
-        {
-            std::cout << "[Video] Post-seek decode: PTS " << localFrame.ptsSeconds << "s (target " << (double)currentSeekTarget / 1000000.0 << "s)" << std::endl;
+            {
+                VIDEO_DEBUG_LOG(std::cout << "[Video] Post-seek decode: PTS " << localFrame.ptsSeconds << "s (target " << (double)currentSeekTarget / 1000000.0 << "s)" << std::endl);
             const int64_t frameMicros = static_cast<int64_t>(localFrame.ptsSeconds * 1000000.0);
             if (frameMicros < currentSeekTarget)
             {
@@ -802,15 +889,15 @@ void asyncDecodeLoop(VideoDecoder* decoder)
             if (frameMicros >= currentSeekTarget)
             {
                 decoder->seekTargetMicroseconds.store(-1);
-                std::cout << "[Video] Seek target reached." << std::endl;
+                VIDEO_DEBUG_LOG(std::cout << "[Video] Seek target reached." << std::endl);
             }
         }
         
         if (frameCount % 30 == 0)
         {
-            std::cout << "[Video] asyncDecodeLoop: decoded frame " << frameCount 
-                      << ", pts=" << localFrame.ptsSeconds 
-                      << "s, decode took " << decodeDuration.count() << " ms" << std::endl;
+            VIDEO_DEBUG_LOG(std::cout << "[Video] asyncDecodeLoop: decoded frame " << frameCount 
+                                      << ", pts=" << localFrame.ptsSeconds 
+                                      << "s, decode took " << decodeDuration.count() << " ms" << std::endl);
         }
 
         std::unique_lock<std::mutex> lock(decoder->frameMutex);
@@ -823,17 +910,17 @@ void asyncDecodeLoop(VideoDecoder* decoder)
         
         if (waitDuration.count() > 10 && frameCount % 10 == 0 && false)
         {
-            std::cout << "[Video] asyncDecodeLoop: waited " << waitDuration.count() 
-                      << " ms for frame queue, size=" << decoder->frameQueue.size() 
-                      << "/" << decoder->maxBufferedFrames << std::endl;
+            VIDEO_DEBUG_LOG(std::cout << "[Video] asyncDecodeLoop: waited " << waitDuration.count() 
+                                      << " ms for frame queue, size=" << decoder->frameQueue.size() 
+                                      << "/" << decoder->maxBufferedFrames << std::endl);
         }
 
         if (decoder->stopRequested.load())
-        {
-            std::cout << "[Video] asyncDecodeLoop: stopRequested detected, breaking loop at frame " 
-                      << frameCount << std::endl;
-            break;
-        }
+            {
+                VIDEO_DEBUG_LOG(std::cout << "[Video] asyncDecodeLoop: stopRequested detected, breaking loop at frame " 
+                                          << frameCount << std::endl);
+                break;
+            }
 
         // If zero-copy was requested but the frame did not carry a Vulkan surface, disable it.
         if (preferZeroCopy && !localFrame.vkSurface.valid)
@@ -851,9 +938,9 @@ void asyncDecodeLoop(VideoDecoder* decoder)
     auto loopEndTime = std::chrono::steady_clock::now();
     auto loopDuration = std::chrono::duration_cast<std::chrono::milliseconds>(loopEndTime - loopStartTime);
     
-    std::cout << "[Video] asyncDecodeLoop exiting after " << frameCount << " frames, " 
-              << loopDuration.count() << " ms, stopRequested=" << decoder->stopRequested.load() 
-              << ", threadRunning=" << decoder->threadRunning.load() << std::endl;
+    VIDEO_DEBUG_LOG(std::cout << "[Video] asyncDecodeLoop exiting after " << frameCount << " frames, " 
+                              << loopDuration.count() << " ms, stopRequested=" << decoder->stopRequested.load() 
+                              << ", threadRunning=" << decoder->threadRunning.load() << std::endl);
     
     decoder->threadRunning.store(false);
     decoder->frameCond.notify_all();
@@ -905,13 +992,13 @@ bool acquireDecodedFrame(VideoDecoder& decoder, DecodedFrame& outFrame)
 
 void stopAsyncDecoding(VideoDecoder& decoder)
 {
-    std::cout << "[Video] stopAsyncDecoding called, asyncDecoding=" << decoder.asyncDecoding 
-              << ", threadRunning=" << decoder.threadRunning.load() 
-              << ", stopRequested=" << decoder.stopRequested.load() << std::endl;
+    VIDEO_DEBUG_LOG(std::cout << "[Video] stopAsyncDecoding called, asyncDecoding=" << decoder.asyncDecoding 
+                              << ", threadRunning=" << decoder.threadRunning.load() 
+                              << ", stopRequested=" << decoder.stopRequested.load() << std::endl);
     
     if (!decoder.asyncDecoding)
     {
-        std::cout << "[Video] stopAsyncDecoding: not async decoding, returning early" << std::endl;
+        VIDEO_DEBUG_LOG(std::cout << "[Video] stopAsyncDecoding: not async decoding, returning early" << std::endl);
         return;
     }
 
@@ -920,25 +1007,25 @@ void stopAsyncDecoding(VideoDecoder& decoder)
     {
         std::lock_guard<std::mutex> lock(decoder.frameMutex);
         decoder.stopRequested.store(true);
-        std::cout << "[Video] stopAsyncDecoding: set stopRequested=true, frameQueue size=" 
-                  << decoder.frameQueue.size() << std::endl;
+        VIDEO_DEBUG_LOG(std::cout << "[Video] stopAsyncDecoding: set stopRequested=true, frameQueue size=" 
+                              << decoder.frameQueue.size() << std::endl);
     }
     decoder.frameCond.notify_all();
-    std::cout << "[Video] stopAsyncDecoding: notified condition variable" << std::endl;
+    VIDEO_DEBUG_LOG(std::cout << "[Video] stopAsyncDecoding: notified condition variable" << std::endl);
 
     if (decoder.decodeThread.joinable())
     {
-        std::cout << "[Video] stopAsyncDecoding: joining decode thread..." << std::endl;
+        VIDEO_DEBUG_LOG(std::cout << "[Video] stopAsyncDecoding: joining decode thread..." << std::endl);
         auto joinStart = std::chrono::steady_clock::now();
         decoder.decodeThread.join();
         auto joinEnd = std::chrono::steady_clock::now();
         auto joinDuration = std::chrono::duration_cast<std::chrono::milliseconds>(joinEnd - joinStart);
-        std::cout << "[Video] stopAsyncDecoding: decode thread joined after " 
-                  << joinDuration.count() << " ms" << std::endl;
+        VIDEO_DEBUG_LOG(std::cout << "[Video] stopAsyncDecoding: decode thread joined after " 
+                                  << joinDuration.count() << " ms" << std::endl);
     }
     else
     {
-        std::cout << "[Video] stopAsyncDecoding: decode thread not joinable" << std::endl;
+        VIDEO_DEBUG_LOG(std::cout << "[Video] stopAsyncDecoding: decode thread not joinable" << std::endl);
     }
 
     decoder.frameQueue.clear();
@@ -948,7 +1035,7 @@ void stopAsyncDecoding(VideoDecoder& decoder)
     
     auto endTime = std::chrono::steady_clock::now();
     auto totalDuration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
-    std::cout << "[Video] stopAsyncDecoding completed in " << totalDuration.count() << " ms" << std::endl;
+    VIDEO_DEBUG_LOG(std::cout << "[Video] stopAsyncDecoding completed in " << totalDuration.count() << " ms" << std::endl);
 }
 
 void cleanupVideoDecoder(VideoDecoder& decoder)
@@ -1508,3 +1595,5 @@ void applyOverlayToDecodedFrame(std::vector<uint8_t>& buffer,
 }
 
 } // namespace video
+
+#undef VIDEO_DEBUG_LOG
