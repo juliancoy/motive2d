@@ -20,6 +20,7 @@ struct ImageResource
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint32_t width = 0;
     uint32_t height = 0;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
 struct OverlayResources
@@ -94,7 +95,8 @@ bool uploadImageData(Engine2D* engine,
                      size_t dataSize,
                      uint32_t width,
                      uint32_t height,
-                     VkFormat format);
+                     VkFormat format,
+                     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 
 bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp);
 void destroyRectOverlayCompute(RectOverlayCompute& comp);

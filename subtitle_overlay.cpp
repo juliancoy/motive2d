@@ -4,6 +4,7 @@
 #include "fonts.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cerrno>
@@ -15,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include "utils.h"
+#include <glm/vec4.hpp>
 namespace
 {
 void skipWhitespace(const char*& ptr, const char* end)
@@ -510,60 +513,371 @@ fonts::FontBitmap prepareLineBitmap(const std::string& text, uint32_t fontSize)
     return fonts::renderText(text, fontSize);
 }
 
-void blendPixels(uint8_t* dest,
-                 uint32_t destWidth,
-                 uint32_t destHeight,
-                 uint8_t* src,
-                 uint32_t srcWidth,
-                 uint32_t srcHeight,
-                 uint32_t destX,
-                 uint32_t destY)
+struct SubtitleLineDescriptor
 {
-    if (!dest || !src)
-    {
-        return;
-    }
-    if (destX >= destWidth || destY >= destHeight)
-    {
-        return;
-    }
-    uint32_t maxWidth = std::min(destWidth - destX, srcWidth);
-    uint32_t maxHeight = std::min(destHeight - destY, srcHeight);
+    glm::ivec2 origin{0, 0};
+    glm::ivec2 size{0, 0};
+};
 
-    for (uint32_t row = 0; row < maxHeight; ++row)
+struct SubtitlePushConstants
+{
+    glm::ivec2 imageSize{0, 0};
+    glm::vec4 backgroundColor{0.0f, 0.0f, 0.0f, 0.55f};
+    glm::vec4 textColor{1.0f};
+    glm::ivec2 lineOrigin[2];
+    glm::ivec2 lineSize[2];
+    int32_t lineCount = 0;
+};
+
+struct SubtitleOverlayCompute
+{
+    VkDevice device = VK_NULL_HANDLE;
+    VkQueue queue = VK_NULL_HANDLE;
+    uint32_t queueFamily = 0;
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+};
+
+SubtitleOverlayCompute g_subtitleCompute{};
+
+bool initializeSubtitleOverlayCompute(Engine2D* engine, SubtitleOverlayCompute& comp)
+{
+    if (!engine)
     {
-        for (uint32_t col = 0; col < maxWidth; ++col)
-        {
-            size_t srcIdx = (static_cast<size_t>(row) * srcWidth + col) * 4;
-            uint8_t srcA = src[srcIdx + 3];
-            if (srcA == 0)
-            {
-                continue;
-            }
-            size_t dstIdx = (static_cast<size_t>(destY + row) * destWidth + (destX + col)) * 4;
-            uint8_t dstA = dest[dstIdx + 3];
-            float srcAF = static_cast<float>(srcA) / 255.0f;
-            float dstAF = static_cast<float>(dstA) / 255.0f;
-            float outA = srcAF + dstAF * (1.0f - srcAF);
-            if (outA <= 0.0f)
-            {
-                continue;
-            }
-            auto blendChannel = [&](uint8_t srcC, uint8_t dstC) -> uint8_t {
-                float srcCF = static_cast<float>(srcC) / 255.0f;
-                float dstCF = static_cast<float>(dstC) / 255.0f;
-                float outCF = (srcCF * srcAF + dstCF * dstAF * (1.0f - srcAF)) / outA;
-                return static_cast<uint8_t>(std::clamp(outCF * 255.0f, 0.0f, 255.0f));
-            };
-            dest[dstIdx + 0] = blendChannel(src[srcIdx + 0], dest[dstIdx + 0]);
-            dest[dstIdx + 1] = blendChannel(src[srcIdx + 1], dest[dstIdx + 1]);
-            dest[dstIdx + 2] = blendChannel(src[srcIdx + 2], dest[dstIdx + 2]);
-            dest[dstIdx + 3] = static_cast<uint8_t>(std::clamp(outA * 255.0f, 0.0f, 255.0f));
-        }
+        return false;
     }
+    if (comp.pipeline != VK_NULL_HANDLE)
+    {
+        return true;
+    }
+
+    comp.device = engine->logicalDevice;
+    comp.queue = engine->graphicsQueue;
+    comp.queueFamily = engine->getGraphicsQueueFamilyIndex();
+
+    auto shaderCode = readSPIRVFile("shaders/subtitle_blit.comp.spv");
+    VkShaderModule shaderModule = engine->createShaderModule(shaderCode);
+
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.pBindings = bindings.data();
+    if (vkCreateDescriptorSetLayout(comp.device, &layoutInfo, nullptr, &comp.descriptorSetLayout) != VK_SUCCESS)
+    {
+        vkDestroyShaderModule(comp.device, shaderModule, nullptr);
+        return false;
+    }
+
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(SubtitlePushConstants);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &comp.descriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+    if (vkCreatePipelineLayout(comp.device, &pipelineLayoutInfo, nullptr, &comp.pipelineLayout) != VK_SUCCESS)
+    {
+        vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
+        vkDestroyShaderModule(comp.device, shaderModule, nullptr);
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stageInfo.module = shaderModule;
+    stageInfo.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    pipelineInfo.stage = stageInfo;
+    pipelineInfo.layout = comp.pipelineLayout;
+    if (vkCreateComputePipelines(comp.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &comp.pipeline) != VK_SUCCESS)
+    {
+        vkDestroyPipelineLayout(comp.device, comp.pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
+        vkDestroyShaderModule(comp.device, shaderModule, nullptr);
+        return false;
+    }
+    vkDestroyShaderModule(comp.device, shaderModule, nullptr);
+
+    std::array<VkDescriptorPoolSize, 2> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[0].descriptorCount = 1;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = 2;
+
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
+    poolInfo.maxSets = 1;
+    if (vkCreateDescriptorPool(comp.device, &poolInfo, nullptr, &comp.descriptorPool) != VK_SUCCESS)
+    {
+        vkDestroyPipeline(comp.device, comp.pipeline, nullptr);
+        vkDestroyPipelineLayout(comp.device, comp.pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
+        return false;
+    }
+
+    VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocInfo.descriptorPool = comp.descriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &comp.descriptorSetLayout;
+    if (vkAllocateDescriptorSets(comp.device, &allocInfo, &comp.descriptorSet) != VK_SUCCESS)
+    {
+        vkDestroyDescriptorPool(comp.device, comp.descriptorPool, nullptr);
+        vkDestroyPipeline(comp.device, comp.pipeline, nullptr);
+        vkDestroyPipelineLayout(comp.device, comp.pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
+        return false;
+    }
+
+    VkCommandPoolCreateInfo poolCreateInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    poolCreateInfo.queueFamilyIndex = comp.queueFamily;
+    poolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    if (vkCreateCommandPool(comp.device, &poolCreateInfo, nullptr, &comp.commandPool) != VK_SUCCESS)
+    {
+        vkDestroyDescriptorPool(comp.device, comp.descriptorPool, nullptr);
+        vkDestroyPipeline(comp.device, comp.pipeline, nullptr);
+        vkDestroyPipelineLayout(comp.device, comp.pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo cmdAllocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmdAllocInfo.commandPool = comp.commandPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    if (vkAllocateCommandBuffers(comp.device, &cmdAllocInfo, &comp.commandBuffer) != VK_SUCCESS)
+    {
+        vkDestroyCommandPool(comp.device, comp.commandPool, nullptr);
+        vkDestroyDescriptorPool(comp.device, comp.descriptorPool, nullptr);
+        vkDestroyPipeline(comp.device, comp.pipeline, nullptr);
+        vkDestroyPipelineLayout(comp.device, comp.pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
+        return false;
+    }
+
+    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkCreateFence(comp.device, &fenceInfo, nullptr, &comp.fence) != VK_SUCCESS)
+    {
+        vkFreeCommandBuffers(comp.device, comp.commandPool, 1, &comp.commandBuffer);
+        vkDestroyCommandPool(comp.device, comp.commandPool, nullptr);
+        vkDestroyDescriptorPool(comp.device, comp.descriptorPool, nullptr);
+        vkDestroyPipeline(comp.device, comp.pipeline, nullptr);
+        vkDestroyPipelineLayout(comp.device, comp.pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
+        return false;
+    }
+
+    return true;
 }
-} // namespace
 
+void destroySubtitleOverlayCompute(SubtitleOverlayCompute& comp)
+{
+    if (comp.fence != VK_NULL_HANDLE)
+    {
+        vkDestroyFence(comp.device, comp.fence, nullptr);
+        comp.fence = VK_NULL_HANDLE;
+    }
+    if (comp.commandPool != VK_NULL_HANDLE)
+    {
+        vkDestroyCommandPool(comp.device, comp.commandPool, nullptr);
+        comp.commandPool = VK_NULL_HANDLE;
+    }
+    if (comp.descriptorPool != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorPool(comp.device, comp.descriptorPool, nullptr);
+        comp.descriptorPool = VK_NULL_HANDLE;
+    }
+    if (comp.pipeline != VK_NULL_HANDLE)
+    {
+        vkDestroyPipeline(comp.device, comp.pipeline, nullptr);
+        comp.pipeline = VK_NULL_HANDLE;
+    }
+    if (comp.pipelineLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyPipelineLayout(comp.device, comp.pipelineLayout, nullptr);
+        comp.pipelineLayout = VK_NULL_HANDLE;
+    }
+    if (comp.descriptorSetLayout != VK_NULL_HANDLE)
+    {
+        vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
+        comp.descriptorSetLayout = VK_NULL_HANDLE;
+    }
+    comp.queue = VK_NULL_HANDLE;
+    comp.queueFamily = 0;
+    comp.device = VK_NULL_HANDLE;
+}
+
+bool runSubtitleOverlayCompute(Engine2D* engine,
+                               SubtitleOverlayCompute& comp,
+                               SubtitleOverlayResources& resources,
+                               const SubtitleLineDescriptor* lineDescriptors,
+                               uint32_t lineCount,
+                               VkSampler glyphSampler)
+{
+    if (!engine || resources.image.view == VK_NULL_HANDLE || resources.image.width == 0 || resources.image.height == 0)
+    {
+        return false;
+    }
+    if (!initializeSubtitleOverlayCompute(engine, comp))
+    {
+        return false;
+    }
+
+    VkDescriptorImageInfo storageInfo{};
+    storageInfo.imageView = resources.image.view;
+    storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkImageView fallbackView = storageInfo.imageView;
+    VkImageView line0View = resources.lines[0].image.view != VK_NULL_HANDLE ? resources.lines[0].image.view : fallbackView;
+    VkImageView line1View = resources.lines[1].image.view != VK_NULL_HANDLE ? resources.lines[1].image.view : line0View;
+
+    VkDescriptorImageInfo glyphInfos[2];
+    glyphInfos[0].imageView = line0View;
+    glyphInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    glyphInfos[0].sampler = glyphSampler;
+    glyphInfos[1].imageView = line1View;
+    glyphInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    glyphInfos[1].sampler = glyphSampler;
+
+    std::array<VkWriteDescriptorSet, 3> writes{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = comp.descriptorSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    writes[0].descriptorCount = 1;
+    writes[0].pImageInfo = &storageInfo;
+
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = comp.descriptorSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].descriptorCount = 1;
+    writes[1].pImageInfo = &glyphInfos[0];
+
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = comp.descriptorSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[2].descriptorCount = 1;
+    writes[2].pImageInfo = &glyphInfos[1];
+
+    vkUpdateDescriptorSets(comp.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkResetCommandBuffer(comp.commandBuffer, 0);
+    vkBeginCommandBuffer(comp.commandBuffer, &beginInfo);
+
+    VkImageMemoryBarrier preBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    preBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    preBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    preBarrier.image = resources.image.image;
+    preBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    preBarrier.subresourceRange.baseMipLevel = 0;
+    preBarrier.subresourceRange.levelCount = 1;
+    preBarrier.subresourceRange.baseArrayLayer = 0;
+    preBarrier.subresourceRange.layerCount = 1;
+    preBarrier.oldLayout = resources.image.layout;
+    preBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    preBarrier.srcAccessMask = (resources.image.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                                    ? VK_ACCESS_SHADER_READ_BIT
+                                    : 0;
+    preBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(comp.commandBuffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &preBarrier);
+
+    vkCmdBindPipeline(comp.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, comp.pipeline);
+    vkCmdBindDescriptorSets(comp.commandBuffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            comp.pipelineLayout,
+                            0,
+                            1,
+                            &comp.descriptorSet,
+                            0,
+                            nullptr);
+
+    SubtitlePushConstants push{};
+    push.imageSize = glm::ivec2(resources.image.width, resources.image.height);
+    push.lineCount = static_cast<int32_t>(lineCount);
+    for (uint32_t i = 0; i < 2; ++i)
+    {
+        push.lineOrigin[i] = lineDescriptors[i].origin;
+        push.lineSize[i] = lineDescriptors[i].size;
+    }
+
+    vkCmdPushConstants(comp.commandBuffer,
+                       comp.pipelineLayout,
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       sizeof(SubtitlePushConstants),
+                       &push);
+
+    const uint32_t groupX = (resources.image.width + 15) / 16;
+    const uint32_t groupY = (resources.image.height + 15) / 16;
+    vkCmdDispatch(comp.commandBuffer, groupX, groupY, 1);
+
+    VkImageMemoryBarrier postBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    postBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    postBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    postBarrier.image = resources.image.image;
+    postBarrier.subresourceRange = preBarrier.subresourceRange;
+    postBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    postBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    postBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    postBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(comp.commandBuffer,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &postBarrier);
+
+    vkEndCommandBuffer(comp.commandBuffer);
+
+    vkResetFences(comp.device, 1, &comp.fence);
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &comp.commandBuffer;
+    if (vkQueueSubmit(comp.queue, 1, &submitInfo, comp.fence) != VK_SUCCESS)
+    {
+        return false;
+    }
+    vkWaitForFences(comp.device, 1, &comp.fence, VK_TRUE, UINT64_MAX);
+
+    resources.image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return true;
+}
+
+} // namespace
 // SubtitleOverlay
 
 bool SubtitleOverlay::load(const std::filesystem::path& path)
@@ -783,11 +1097,23 @@ bool updateSubtitleOverlay(Engine2D* engine,
     }
     const uint32_t texWidth = textWidth + padding * 2;
     const uint32_t texHeight = textHeight + padding * 2;
-    const uint32_t pixelCount = texWidth * texHeight;
-    std::vector<uint8_t> pixels(static_cast<size_t>(pixelCount) * 4);
-    std::fill(pixels.begin(), pixels.end(), 0);
+
+    bool recreated = false;
+    if (!overlay::ensureImageResource(engine,
+                                      resources.image,
+                                      texWidth,
+                                      texHeight,
+                                      VK_FORMAT_R8G8B8A8_UNORM,
+                                      recreated,
+                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+    {
+        return false;
+    }
+
+    SubtitleLineDescriptor lineDescriptors[2]{};
     uint32_t yOffset = padding;
-    for (size_t idx = 0; idx < bitmaps.size(); ++idx)
+    const size_t preparedLines = std::min(bitmaps.size(), static_cast<size_t>(2));
+    for (size_t idx = 0; idx < preparedLines; ++idx)
     {
         const auto& bmp = bitmaps[idx];
         if (bmp.pixels.empty())
@@ -800,14 +1126,24 @@ bool updateSubtitleOverlay(Engine2D* engine,
         {
             destX += (innerWidth - bmp.width) / 2;
         }
-        blendPixels(pixels.data(),
-                    overlayWidth,
-                    overlayHeight,
-                    const_cast<uint8_t*>(bmp.pixels.data()),
-                    bmp.width,
-                    bmp.height,
-                    destX,
-                    yOffset);
+
+        if (!overlay::uploadImageData(engine,
+                                      resources.lines[idx].image,
+                                      bmp.pixels.data(),
+                                      bmp.pixels.size(),
+                                      bmp.width,
+                                      bmp.height,
+                                      VK_FORMAT_R8G8B8A8_UNORM))
+        {
+            return false;
+        }
+        resources.lines[idx].width = bmp.width;
+        resources.lines[idx].height = bmp.height;
+
+        lineDescriptors[idx].origin = glm::ivec2(destX, yOffset);
+        lineDescriptors[idx].size = glm::ivec2(static_cast<int32_t>(bmp.width),
+                                               static_cast<int32_t>(bmp.height));
+
         yOffset += bmp.height;
         if (idx + 1 < bitmaps.size())
         {
@@ -815,13 +1151,8 @@ bool updateSubtitleOverlay(Engine2D* engine,
         }
     }
 
-    if (!overlay::uploadImageData(engine,
-                                  resources.image,
-                                  pixels.data(),
-                                  pixels.size(),
-                                  texWidth,
-                                  texHeight,
-                                  VK_FORMAT_R8G8B8A8_UNORM))
+    VkSampler glyphSampler = overlaySampler != VK_NULL_HANDLE ? overlaySampler : fallbackSampler;
+    if (!runSubtitleOverlayCompute(engine, g_subtitleCompute, resources, lineDescriptors, static_cast<uint32_t>(preparedLines), glyphSampler))
     {
         return false;
     }
@@ -853,6 +1184,13 @@ void destroySubtitleOverlayResources(Engine2D* engine, SubtitleOverlayResources&
     if (engine)
     {
         overlay::destroyImageResource(engine, resources.image);
+        for (auto& line : resources.lines)
+        {
+            overlay::destroyImageResource(engine, line.image);
+            line.width = 0;
+            line.height = 0;
+        }
+        destroySubtitleOverlayCompute(g_subtitleCompute);
     }
     resources.info = {};
 }

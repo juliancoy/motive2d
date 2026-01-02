@@ -29,3 +29,5 @@ yolo11l-pose
 run_yolo11_seg*
 2025*
 scripts
+decode_benchmark
+perf.data

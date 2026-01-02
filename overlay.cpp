@@ -239,6 +239,7 @@ void destroyImageResource(Engine2D* engine, ImageResource& res)
     res.format = VK_FORMAT_UNDEFINED;
     res.width = 0;
     res.height = 0;
+    res.layout = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 bool ensureImageResource(Engine2D* engine,
@@ -317,6 +318,7 @@ bool ensureImageResource(Engine2D* engine,
     res.format = format;
     res.width = width;
     res.height = height;
+    res.layout = VK_IMAGE_LAYOUT_UNDEFINED;
     return true;
 }
 
@@ -326,7 +328,8 @@ bool uploadImageData(Engine2D* engine,
                      size_t dataSize,
                      uint32_t width,
                      uint32_t height,
-                     VkFormat format)
+                     VkFormat format,
+                     VkImageUsageFlags usage)
 {
     if (!data || dataSize == 0 || width == 0 || height == 0)
     {
@@ -334,8 +337,7 @@ bool uploadImageData(Engine2D* engine,
     }
 
     bool recreated = false;
-    if (!ensureImageResource(engine, res, width, height, format, recreated,
-                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
+    if (!ensureImageResource(engine, res, width, height, format, recreated, usage))
     {
         return false;
     }
@@ -370,6 +372,7 @@ bool uploadImageData(Engine2D* engine,
     vkDestroyBuffer(engine->logicalDevice, stagingBuffer, nullptr);
     vkFreeMemory(engine->logicalDevice, stagingBufferMemory, nullptr);
 
+    res.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     return true;
 }
 

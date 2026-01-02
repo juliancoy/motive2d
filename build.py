@@ -25,7 +25,7 @@ manifest_path = os.path.join(this_dir, ".build_manifest.json")
 ffmpeg_install_dir = os.path.abspath(os.path.join(this_dir, "FFmpeg/.build/install"))
 
 # Source and object files
-main_sources = ["motive2d.cpp"]
+main_sources = ["motive2d.cpp", "decode_benchmark.cpp"]
 exclude_sources = ["vulkan_video_bridge.cpp", "encode.cpp"]  # missing Vulkan-Video-Samples libraries
 so_sources = []
 for file in os.listdir(this_dir):

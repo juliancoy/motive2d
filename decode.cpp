@@ -289,9 +289,11 @@ bool uploadDecodedFrame(VideoResources &video,
     return true;
 }
 
-int runDecodeOnlyBenchmark(const std::filesystem::path &videoPath, const std::optional<bool> &swapUvOverride)
+int runDecodeOnlyBenchmark(const std::filesystem::path &videoPath,
+                           const std::optional<bool> &swapUvOverride,
+                           double benchmarkSeconds)
 {
-    constexpr double kBenchmarkSeconds = 5.0; // default window to measure decode speed
+    const double kBenchmarkSeconds = benchmarkSeconds > 0.0 ? benchmarkSeconds : 5.0;
     if (!std::filesystem::exists(videoPath))
     {
         std::cerr << "[DecodeOnly] Missing video file: " << videoPath << std::endl;
@@ -330,6 +332,7 @@ int runDecodeOnlyBenchmark(const std::filesystem::path &videoPath, const std::op
     auto start = std::chrono::steady_clock::now();
     size_t framesDecoded = 0;
     double firstPts = -1.0;
+    double decodedSeconds = 0.0;
     while (video::decodeNextFrame(decoder, frame, /*copyFrameBuffer=*/false))
     {
         framesDecoded++;
@@ -340,6 +343,7 @@ int runDecodeOnlyBenchmark(const std::filesystem::path &videoPath, const std::op
 
         // Stop after decoding the first kBenchmarkSeconds worth of video.
         double elapsedPts = frame.ptsSeconds - (firstPts < 0.0 ? 0.0 : firstPts);
+        decodedSeconds = elapsedPts;
         if (elapsedPts >= kBenchmarkSeconds)
         {
             break;
@@ -351,12 +355,10 @@ int runDecodeOnlyBenchmark(const std::filesystem::path &videoPath, const std::op
     double seconds = std::chrono::duration<double>(end - start).count();
     double fps = seconds > 0.0 ? static_cast<double>(framesDecoded) / seconds : 0.0;
 
-    if (video::debugLoggingEnabled())
-    {
-        std::cout << "[DecodeOnly] Decoded " << framesDecoded << " frames in " << seconds
-                  << "s -> " << fps << " fps using " << decoder.implementationName
-                  << " over ~" << kBenchmarkSeconds << "s of content" << std::endl;
-    }
+    std::cout << "[DecodeOnly] Decoded "
+              << framesDecoded << " frames (~" << std::min(decodedSeconds, kBenchmarkSeconds)
+              << "s of source) in " << seconds << "s -> " << fps << " fps using "
+              << decoder.implementationName << std::endl;
 
     video::cleanupVideoDecoder(decoder);
     return 0;

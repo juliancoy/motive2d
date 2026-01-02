@@ -31,10 +31,18 @@ private:
     mutable size_t lastIndex_ = 0;
 };
 
+struct SubtitleLineResource
+{
+    overlay::ImageResource image;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
 struct SubtitleOverlayResources
 {
     overlay::ImageResource image;
     OverlayImageInfo info{};
+    SubtitleLineResource lines[2];
 };
 
 bool updateSubtitleOverlay(Engine2D* engine,

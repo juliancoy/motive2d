@@ -73,4 +73,6 @@ void pumpDecodedFrames(VideoPlaybackState& state);
 double advancePlayback(VideoPlaybackState& state, bool playing);
 
 // Benchmark function
-int runDecodeOnlyBenchmark(const std::filesystem::path& videoPath, const std::optional<bool>& swapUvOverride);
+int runDecodeOnlyBenchmark(const std::filesystem::path& videoPath,
+                           const std::optional<bool>& swapUvOverride,
+                           double benchmarkSeconds = 5.0);
