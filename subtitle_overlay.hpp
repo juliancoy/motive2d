@@ -40,9 +40,8 @@ struct SubtitleLineResource
 
 struct SubtitleOverlayResources
 {
-    overlay::ImageResource image;
-    OverlayImageInfo info{};
     SubtitleLineResource lines[2];
+    bool active = false;
 };
 
 bool updateSubtitleOverlay(Engine2D* engine,
@@ -53,8 +52,10 @@ bool updateSubtitleOverlay(Engine2D* engine,
                            uint32_t fbHeight,
                            glm::vec2 overlayCenter,
                            glm::vec2 overlaySize,
+                           overlay::ImageResource& overlayTarget,
                            VkSampler overlaySampler,
                            VkSampler fallbackSampler,
-                           size_t maxLines = 2);
+                           size_t maxLines = 2,
+                           bool enableBackground = true);
 
 void destroySubtitleOverlayResources(Engine2D* engine, SubtitleOverlayResources& resources);

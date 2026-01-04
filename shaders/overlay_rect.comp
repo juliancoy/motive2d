@@ -3,8 +3,8 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, rgba8) uniform readonly image2D poseImage;
-layout(set = 0, binding = 1, rgba8) uniform writeonly image2D overlayImage;
+// Single read-write binding for in-place modification
+layout(set = 0, binding = 0, rgba8) uniform image2D overlayImage;
 
 layout(push_constant) uniform Push {
     vec2 outputSize;
@@ -22,7 +22,7 @@ void main() {
         return;
     }
 
-    vec4 existing = imageLoad(poseImage, pixel);
+    vec4 existing = imageLoad(overlayImage, pixel);
     vec4 finalColor = existing;
 
     if (pushC.overlayActive <= 0.5) {

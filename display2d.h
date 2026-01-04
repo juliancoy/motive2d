@@ -45,8 +45,6 @@ struct RenderOverrides
     bool useCrop = false;
     glm::vec2 cropOrigin{0.0f, 0.0f};
     glm::vec2 cropSize{1.0f, 1.0f};
-    // Optional: hide scrubber/play controls
-    bool hideScrubber = false;
 };
 
 struct ColorAdjustments
@@ -60,6 +58,10 @@ struct ColorAdjustments
     std::array<float, 256> curveLut{};
     bool curveEnabled = false;
 };
+
+extern const bool kRenderDebugEnabled;
+
+extern const bool kRenderDebugEnabled;
 
 class Display2D
 {
@@ -80,6 +82,7 @@ public:
     void pollEvents() const;
     void setOverlayPassEnabled(bool enabled);
     void setVideoPassEnabled(bool enabled);
+    void setScrubberPassEnabled(bool enabled);
 
     GLFWwindow* window = nullptr;
     int width = 0;
@@ -93,6 +96,7 @@ private:
     VkExtent2D swapchainExtent{};
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;
+    std::vector<VkImageLayout> swapchainImageLayouts;
 
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -112,18 +116,25 @@ private:
     VkPipeline scrubPipeline = VK_NULL_HANDLE;
     bool videoPassEnabled = true;
     bool overlayPassEnabled = true;
+    bool scrubberPassEnabled = true;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets;
 
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> inFlightFences;
+    std::vector<VkImage> gradingImages;
+    std::vector<VkDeviceMemory> gradingImageMemories;
+    std::vector<VkImageView> gradingImageViews;
+    std::vector<VkImageLayout> gradingImageLayouts;
     size_t currentFrame = 0;
 
     void createWindow(const char* title);
     void createSurface();
     void createSwapchain();
+    void createGradingImages();
     void cleanupSwapchain();
+    void destroyGradingImages();
     void createCommandResources();
     void createComputeResources();
     void recreateSwapchain();

@@ -392,7 +392,6 @@ void Engine2D::shutdown()
         overlay::destroyImageResource(this, playbackState.video.lumaImage);
         overlay::destroyImageResource(this, playbackState.video.chromaImage);
         overlay::destroyImageResource(this, playbackState.overlay.image);
-        overlay::destroyImageResource(this, playbackState.poseOverlayImage);
         overlay::destroyImageResource(this, playbackState.fpsOverlay.image);
 
         if (playbackState.video.sampler != VK_NULL_HANDLE)

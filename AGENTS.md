@@ -202,6 +202,19 @@ Engine2D (engine.h/engine.cpp)
 - **Separation of Concerns:** Clear division between rendering, camera management, model management, and resource management
 - **Event Forwarding:** Display forwards input events to Camera instances
 
+## Pipeline Architecture
+
+For a comprehensive diagram of all pipelines including decoder, render plane, and their connections, see `pipeline_architecture.md`. Key pipelines include:
+
+1. **Video Decoding Pipeline**: FFmpeg/Vulkan Video decoder → VideoImageSet
+2. **Video Blit Pipeline**: YUV → RGB conversion to Grading Images
+3. **Overlay Pipelines**: Pose, rectangle, subtitle, and FPS overlays applied to Grading Images
+4. **Grading Pipeline**: Color adjustments (exposure, contrast, saturation, 3-way color, curve LUT)
+5. **Scrubber Pipeline**: Final blit to swapchain with aspect ratio handling
+6. **Presentation Pipeline**: Swapchain to GLFW window
+
+Each pipeline has specific source/destination mappings and operates on intermediate buffers (Grading Images) for isolation between processing stages.
+
 ## Headless Vulkan Video (In Progress)
 - Headless Annex-B path built in `encode.cpp` using `mini_decoder*` helpers (no FFmpeg); loads Vulkan Video entry points from `Engine2D` and queries decode formats with `vkGetPhysicalDeviceVideoFormatPropertiesKHR`.
 - `mini_decoder_session` creates `VkVideoSession/VkVideoSessionParameters` and allocates DPB images/views; `mini_decode_pipeline` uploads Annex-B NALs into a bitstream buffer and records `vkCmdDecodeVideoKHR`, transitioning DPB images to `GENERAL`.

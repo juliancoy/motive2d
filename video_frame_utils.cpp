@@ -208,6 +208,8 @@ void copyPlanarFrameToBuffer(const VideoDecoder& decoder,
                 for (uint32_t col = 0; col < chromaWidth; ++col) {
                     dstRow[col * 2 + 0] = uRow[col];
                     dstRow[col * 2 + 1] = vRow[col];
+                    uSum += uRow[col];
+                    vSum += vRow[col];
                 }
             }
         } else {
@@ -222,6 +224,16 @@ void copyPlanarFrameToBuffer(const VideoDecoder& decoder,
                     }
                 } else {
                     std::memcpy(dstRow, srcRow, chromaRowBytes);
+                }
+                // Calculate chroma sums for interleaved 8-bit data
+                for (uint32_t col = 0; col < chromaWidth; ++col) {
+                    if (decoder.swapChromaUV) {
+                        uSum += srcRow[col * 2 + 1];
+                        vSum += srcRow[col * 2 + 0];
+                    } else {
+                        uSum += srcRow[col * 2 + 0];
+                        vSum += srcRow[col * 2 + 1];
+                    }
                 }
             }
         }

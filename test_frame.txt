@@ -1,0 +1,9 @@
+Frame metadata:
+  Width: 4096
+  Height: 2160
+  Format: 2
+  Bytes per component: 1
+  Y plane bytes: 8847360
+  UV plane bytes: 4423680
+  Total frame size: 13271040
+  PTS: 0

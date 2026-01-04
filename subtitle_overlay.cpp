@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <string>
 #include <utility>
@@ -733,11 +734,13 @@ void destroySubtitleOverlayCompute(SubtitleOverlayCompute& comp)
 bool runSubtitleOverlayCompute(Engine2D* engine,
                                SubtitleOverlayCompute& comp,
                                SubtitleOverlayResources& resources,
+                               overlay::ImageResource& target,
                                const SubtitleLineDescriptor* lineDescriptors,
                                uint32_t lineCount,
-                               VkSampler glyphSampler)
+                               VkSampler glyphSampler,
+                               bool enableBackground)
 {
-    if (!engine || resources.image.view == VK_NULL_HANDLE || resources.image.width == 0 || resources.image.height == 0)
+    if (!engine || target.view == VK_NULL_HANDLE || target.width == 0 || target.height == 0)
     {
         return false;
     }
@@ -747,7 +750,7 @@ bool runSubtitleOverlayCompute(Engine2D* engine,
     }
 
     VkDescriptorImageInfo storageInfo{};
-    storageInfo.imageView = resources.image.view;
+    storageInfo.imageView = target.view;
     storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkImageView fallbackView = storageInfo.imageView;
@@ -794,15 +797,15 @@ bool runSubtitleOverlayCompute(Engine2D* engine,
     VkImageMemoryBarrier preBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     preBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     preBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    preBarrier.image = resources.image.image;
+    preBarrier.image = target.image;
     preBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     preBarrier.subresourceRange.baseMipLevel = 0;
     preBarrier.subresourceRange.levelCount = 1;
     preBarrier.subresourceRange.baseArrayLayer = 0;
     preBarrier.subresourceRange.layerCount = 1;
-    preBarrier.oldLayout = resources.image.layout;
+    preBarrier.oldLayout = target.layout;
     preBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    preBarrier.srcAccessMask = (resources.image.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+    preBarrier.srcAccessMask = (target.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                                     ? VK_ACCESS_SHADER_READ_BIT
                                     : 0;
     preBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -825,7 +828,9 @@ bool runSubtitleOverlayCompute(Engine2D* engine,
                             nullptr);
 
     SubtitlePushConstants push{};
-    push.imageSize = glm::ivec2(resources.image.width, resources.image.height);
+    push.backgroundColor = enableBackground ? glm::vec4(0.0f, 0.0f, 0.0f, 0.55f) : glm::vec4(0.0f);
+    push.textColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f);
+    push.imageSize = glm::ivec2(target.width, target.height);
     push.lineCount = static_cast<int32_t>(lineCount);
     for (uint32_t i = 0; i < 2; ++i)
     {
@@ -840,14 +845,14 @@ bool runSubtitleOverlayCompute(Engine2D* engine,
                        sizeof(SubtitlePushConstants),
                        &push);
 
-    const uint32_t groupX = (resources.image.width + 15) / 16;
-    const uint32_t groupY = (resources.image.height + 15) / 16;
+    const uint32_t groupX = (target.width + 15) / 16;
+    const uint32_t groupY = (target.height + 15) / 16;
     vkCmdDispatch(comp.commandBuffer, groupX, groupY, 1);
 
     VkImageMemoryBarrier postBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     postBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     postBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    postBarrier.image = resources.image.image;
+    postBarrier.image = target.image;
     postBarrier.subresourceRange = preBarrier.subresourceRange;
     postBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     postBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -873,7 +878,7 @@ bool runSubtitleOverlayCompute(Engine2D* engine,
     }
     vkWaitForFences(comp.device, 1, &comp.fence, VK_TRUE, UINT64_MAX);
 
-    resources.image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    target.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     return true;
 }
 
@@ -985,19 +990,25 @@ bool updateSubtitleOverlay(Engine2D* engine,
                            uint32_t fbHeight,
                            glm::vec2 overlayCenter,
                            glm::vec2 overlaySize,
+                           overlay::ImageResource& overlayTarget,
                            VkSampler overlaySampler,
                            VkSampler fallbackSampler,
-                           size_t maxLines)
+                           size_t maxLines,
+                           bool enableBackground)
 {
-    resources.info.enabled = false;
-    if (!engine || fbWidth == 0 || fbHeight == 0 || overlaySize.x <= 0.0f || overlaySize.y <= 0.0f || !overlay.hasData())
+    resources.active = false;
+    if (!engine || fbWidth == 0 || fbHeight == 0 || overlaySize.x <= 0.0f || overlaySize.y <= 0.0f ||
+        overlayTarget.view == VK_NULL_HANDLE || overlayTarget.width == 0 || overlayTarget.height == 0 ||
+        !overlay.hasData())
     {
+        std::cout << "[Subtitle] updateSubtitleOverlay: invalid parameters" << std::endl;
         return false;
     }
 
     const std::vector<const SubtitleOverlay::Line*> candidateLines = overlay.activeLines(currentTime, maxLines);
     if (candidateLines.empty())
     {
+        std::cout << "[Subtitle] No active lines at time " << currentTime << std::endl;
         return false;
     }
 
@@ -1025,17 +1036,29 @@ bool updateSubtitleOverlay(Engine2D* engine,
 
     if (lines.empty())
     {
+        std::cout << "[Subtitle] No valid lines after filtering" << std::endl;
         return false;
     }
 
     const uint32_t overlayWidth = static_cast<uint32_t>(
-        std::clamp(std::lround(overlaySize.x), 1l, static_cast<long>(fbWidth)));
+        std::clamp(std::lround(overlaySize.x), 1l, static_cast<long>(overlayTarget.width)));
     const uint32_t overlayHeight = static_cast<uint32_t>(
-        std::clamp(std::lround(overlaySize.y), 1l, static_cast<long>(fbHeight)));
+        std::clamp(std::lround(overlaySize.y), 1l, static_cast<long>(overlayTarget.height)));
     if (overlayWidth == 0 || overlayHeight == 0)
     {
+        std::cout << "[Subtitle] Invalid overlay dimensions: " << overlayWidth << "x" << overlayHeight << std::endl;
         return false;
     }
+
+    const int32_t maxLeft = std::max<int32_t>(0, static_cast<int32_t>(overlayTarget.width) - static_cast<int32_t>(overlayWidth));
+    const int32_t maxTop = std::max<int32_t>(0, static_cast<int32_t>(overlayTarget.height) - static_cast<int32_t>(overlayHeight));
+    const int32_t overlayLeft =
+        static_cast<int32_t>(std::clamp(overlayCenter.x - overlayWidth * 0.5f, 0.0f, static_cast<float>(maxLeft)));
+    const int32_t overlayTop =
+        static_cast<int32_t>(std::clamp(overlayCenter.y - overlayHeight * 0.5f, 0.0f, static_cast<float>(maxTop)));
+
+    std::cout << "[Subtitle] Overlay bounds: " << overlayWidth << "x" << overlayHeight
+              << " at (" << overlayLeft << "," << overlayTop << ")" << std::endl;
 
     const uint32_t padding = std::max<uint32_t>(8, overlayHeight / 20);
     const uint32_t innerWidth = overlayWidth > padding * 2 ? overlayWidth - padding * 2 : 0;
@@ -1045,13 +1068,16 @@ bool updateSubtitleOverlay(Engine2D* engine,
         return false;
     }
 
-    uint32_t fontSize = std::max<uint32_t>(12, innerHeight / (static_cast<uint32_t>(lines.size()) + 1));
+    uint32_t fontSize = std::max<uint32_t>(24, innerHeight / 4);
     fontSize = std::min(fontSize, innerHeight);
+
     std::vector<fonts::FontBitmap> bitmaps;
     bitmaps.reserve(lines.size());
-    uint32_t finalLineSpacing = std::max<uint32_t>(2, fontSize / 2);
+    uint32_t finalLineSpacing = std::max<uint32_t>(4, fontSize / 4);
     uint32_t maxLineWidth = 0;
     uint32_t combinedHeight = 0;
+
+    const uint32_t minFontSize = 16;
     while (true)
     {
         bitmaps.clear();
@@ -1071,44 +1097,37 @@ bool updateSubtitleOverlay(Engine2D* engine,
 
         if (bitmaps.empty())
         {
+            std::cout << "[Subtitle] No bitmaps generated" << std::endl;
             return false;
         }
 
         combinedHeight += (bitmaps.size() > 1 ? (static_cast<uint32_t>(bitmaps.size()) - 1) * finalLineSpacing : 0);
-        if (maxLineWidth <= innerWidth && combinedHeight <= innerHeight)
+
+        bool fits = combinedHeight <= innerHeight;
+        if (fits && maxLineWidth <= innerWidth * 1.2f)
         {
             break;
         }
 
-        if (fontSize <= 12)
+        if (fontSize <= minFontSize)
         {
             break;
         }
 
         --fontSize;
-        finalLineSpacing = std::max<uint32_t>(2, fontSize / 2);
+        finalLineSpacing = std::max<uint32_t>(4, fontSize / 4);
     }
 
     const uint32_t textWidth = std::min(maxLineWidth, innerWidth);
     const uint32_t textHeight = std::min(combinedHeight, innerHeight);
     if (textWidth == 0 || textHeight == 0)
     {
+        std::cout << "[Subtitle] Invalid text dimensions: " << textWidth << "x" << textHeight << std::endl;
         return false;
     }
-    const uint32_t texWidth = textWidth + padding * 2;
-    const uint32_t texHeight = textHeight + padding * 2;
-
-    bool recreated = false;
-    if (!overlay::ensureImageResource(engine,
-                                      resources.image,
-                                      texWidth,
-                                      texHeight,
-                                      VK_FORMAT_R8G8B8A8_UNORM,
-                                      recreated,
-                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT))
-    {
-        return false;
-    }
+    
+    std::cout << "[Subtitle] Text dimensions: " << textWidth << "x" << textHeight 
+              << " (inner: " << innerWidth << "x" << innerHeight << ")" << std::endl;
 
     SubtitleLineDescriptor lineDescriptors[2]{};
     uint32_t yOffset = padding;
@@ -1121,7 +1140,7 @@ bool updateSubtitleOverlay(Engine2D* engine,
             continue;
         }
 
-        uint32_t destX = padding;
+        uint32_t destX = overlayLeft + padding;
         if (bmp.width < innerWidth)
         {
             destX += (innerWidth - bmp.width) / 2;
@@ -1135,12 +1154,16 @@ bool updateSubtitleOverlay(Engine2D* engine,
                                       bmp.height,
                                       VK_FORMAT_R8G8B8A8_UNORM))
         {
+            std::cout << "[Subtitle] Failed to upload image data for line " << idx << std::endl;
             return false;
         }
+
+        std::cout << "[Subtitle] Uploaded line " << idx << ": " << bmp.width << "x" << bmp.height 
+                  << " (" << bmp.pixels.size() << " bytes)" << std::endl;
         resources.lines[idx].width = bmp.width;
         resources.lines[idx].height = bmp.height;
 
-        lineDescriptors[idx].origin = glm::ivec2(destX, yOffset);
+        lineDescriptors[idx].origin = glm::ivec2(static_cast<int32_t>(destX), static_cast<int32_t>(overlayTop + yOffset));
         lineDescriptors[idx].size = glm::ivec2(static_cast<int32_t>(bmp.width),
                                                static_cast<int32_t>(bmp.height));
 
@@ -1152,38 +1175,30 @@ bool updateSubtitleOverlay(Engine2D* engine,
     }
 
     VkSampler glyphSampler = overlaySampler != VK_NULL_HANDLE ? overlaySampler : fallbackSampler;
-    if (!runSubtitleOverlayCompute(engine, g_subtitleCompute, resources, lineDescriptors, static_cast<uint32_t>(preparedLines), glyphSampler))
+    std::cout << "[Subtitle] Running compute with " << preparedLines << " lines, sampler: " 
+              << (glyphSampler != VK_NULL_HANDLE ? "valid" : "null") << std::endl;
+    if (!runSubtitleOverlayCompute(engine,
+                                   g_subtitleCompute,
+                                   resources,
+                                   overlayTarget,
+                                   lineDescriptors,
+                                   static_cast<uint32_t>(preparedLines),
+                                   glyphSampler,
+                                   enableBackground))
     {
+        std::cout << "[Subtitle] Compute shader failed" << std::endl;
         return false;
     }
 
-    const int32_t maxOffsetX =
-        static_cast<int32_t>(std::max<uint32_t>(0u, fbWidth > texWidth ? fbWidth - texWidth : 0u));
-    const int32_t maxOffsetY =
-        static_cast<int32_t>(std::max<uint32_t>(0u, fbHeight > texHeight ? fbHeight - texHeight : 0u));
-    const float halfWidth = overlaySize.x * 0.5f;
-    const float halfHeight = overlaySize.y * 0.5f;
-    int32_t offsetX =
-        static_cast<int32_t>(std::lround(overlayCenter.x - halfWidth));
-    int32_t offsetY =
-        static_cast<int32_t>(std::lround(overlayCenter.y - halfHeight));
-    offsetX = std::clamp(offsetX, 0, maxOffsetX);
-    offsetY = std::clamp(offsetY, 0, maxOffsetY);
-
-    VkSampler sampler = overlaySampler != VK_NULL_HANDLE ? overlaySampler : fallbackSampler;
-    resources.info.overlay.view = resources.image.view;
-    resources.info.overlay.sampler = sampler;
-    resources.info.extent = {texWidth, texHeight};
-    resources.info.offset = {offsetX, offsetY};
-    resources.info.enabled = true;
-    return true;
+    std::cout << "[Subtitle] Compute shader succeeded" << std::endl;
+    resources.active = preparedLines > 0;
+    return resources.active;
 }
 
 void destroySubtitleOverlayResources(Engine2D* engine, SubtitleOverlayResources& resources)
 {
     if (engine)
     {
-        overlay::destroyImageResource(engine, resources.image);
         for (auto& line : resources.lines)
         {
             overlay::destroyImageResource(engine, line.image);
@@ -1192,5 +1207,5 @@ void destroySubtitleOverlayResources(Engine2D* engine, SubtitleOverlayResources&
         }
         destroySubtitleOverlayCompute(g_subtitleCompute);
     }
-    resources.info = {};
+    resources.active = false;
 }

@@ -42,12 +42,14 @@ struct CliOptions
     bool showGrading = true;
     bool poseEnabled = false;
     bool overlaysEnabled = true;
+    bool scrubberEnabled = true;
     std::filesystem::path poseModelBase = "yolov8n_pose";
     bool debugDecode = false;
     bool inputOnly = false;
     bool skipBlit = false;
     bool singleFrame = false;
     std::filesystem::path outputImagePath = "frame.png";
+    bool subtitleBackground = true;
 };
 
 CliOptions parseCliOptions(int argc, char** argv)
@@ -115,6 +117,16 @@ CliOptions parseCliOptions(int argc, char** argv)
             opts.skipBlit = true;
             continue;
         }
+        if (arg == "--no-scrubber")
+        {
+            opts.scrubberEnabled = false;
+            continue;
+        }
+        if (arg == "--scrubber")
+        {
+            opts.scrubberEnabled = true;
+            continue;
+        }
         if (arg == "--single-frame" || arg == "--first-frame-only")
         {
             opts.singleFrame = true;
@@ -123,6 +135,11 @@ CliOptions parseCliOptions(int argc, char** argv)
         if (arg.rfind("--output=", 0) == 0)
         {
             opts.outputImagePath = std::filesystem::path(arg.substr(std::string("--output=").size()));
+            continue;
+        }
+        if (arg == "--no-subtitle-background")
+        {
+            opts.subtitleBackground = false;
             continue;
         }
         if (arg.rfind("--windows", 0) == 0)
@@ -907,6 +924,7 @@ int main(int argc, char** argv)
         }
         glfwSetScrollCallback(inputWindow->window, onScroll);
         inputWindow->setOverlayPassEnabled(cli.overlaysEnabled);
+        inputWindow->setScrubberPassEnabled(cli.scrubberEnabled);
         if (cli.skipBlit)
         {
             inputWindow->setVideoPassEnabled(false);
@@ -921,6 +939,7 @@ int main(int argc, char** argv)
             return 1;
         }
         regionWindow->setOverlayPassEnabled(cli.overlaysEnabled);
+        regionWindow->setScrubberPassEnabled(cli.scrubberEnabled);
         if (cli.skipBlit)
         {
             regionWindow->setVideoPassEnabled(false);
@@ -935,6 +954,7 @@ int main(int argc, char** argv)
             return 1;
         }
         gradingWindow->setOverlayPassEnabled(cli.overlaysEnabled);
+        gradingWindow->setScrubberPassEnabled(cli.scrubberEnabled);
         if (cli.skipBlit)
         {
             gradingWindow->setVideoPassEnabled(false);
@@ -995,6 +1015,15 @@ int main(int argc, char** argv)
     float windowHeight = 720.0f;
     GradingSettings gradingSettings{};
     grading::setGradingDefaults(gradingSettings);
+    // Try to load saved grading settings at startup
+    if (!grading::loadGradingSettings("blit_settings.json", gradingSettings))
+    {
+        std::cout << "[motive2d] Using default grading settings (blit_settings.json not found or invalid)\n";
+    }
+    else
+    {
+        std::cout << "[motive2d] Loaded grading settings from blit_settings.json\n";
+    }
     std::array<float, kCurveLutSize> curveLut{};
     bool curveDirty = true;
     bool gradingOverlayDirty = true;
@@ -1003,7 +1032,7 @@ int main(int argc, char** argv)
     bool gradingMouseHeld = false;
     bool gradingRightHeld = false;
     grading::SliderLayout gradingLayout{};
-    bool gradingPreviewEnabled = true;
+    bool gradingPreviewEnabled = false;
     bool detectionEnabled = false;
 
     auto runGradingClick = [&](bool rightClick) {
@@ -1354,9 +1383,10 @@ int main(int argc, char** argv)
         }
 
         const float poseOverlayEnabled = overlayCount > 0 ? 1.0f : 0.0f;
+        // Run pose overlay directly to the main overlay image
         overlay::runPoseOverlayCompute(&engine,
                                        poseOverlayCompute,
-                                       playbackState.poseOverlayImage,
+                                       playbackState.overlay.image,
                                        fbWidth,
                                        fbHeight,
                                        overlayRectCenter,
@@ -1367,9 +1397,10 @@ int main(int argc, char** argv)
                                        overlaySource,
                                        overlayCount);
         const float rectDetectionFlag = detectionEnabled ? 1.0f : 0.0f;
+        // Run rectangle overlay reading from and writing to the same image
         overlay::runRectOverlayCompute(&engine,
                                        rectOverlayCompute,
-                                       playbackState.poseOverlayImage,
+                                       playbackState.overlay.image,
                                        playbackState.overlay.image,
                                        fbWidth,
                                        fbHeight,
@@ -1379,12 +1410,13 @@ int main(int argc, char** argv)
                                        overlayInnerThickness,
                                        rectDetectionFlag,
                                        overlayActive ? 1.0f : 0.0f);
-        playbackState.overlay.info.overlay.view = playbackState.overlay.image.view;
-        playbackState.overlay.info.overlay.sampler = playbackState.overlay.sampler;
-        playbackState.overlay.info.extent = {fbWidth, fbHeight};
-        playbackState.overlay.info.offset = {0, 0};
-        playbackState.overlay.info.enabled = true;
-
+        // Always update curve LUT when dirty, regardless of preview state
+        if (curveDirty)
+        {
+            grading::buildCurveLut(gradingSettings, curveLut);
+            curveDirty = false;
+        }
+        
         ColorAdjustments adjustments{};
         if (gradingPreviewEnabled)
         {
@@ -1394,15 +1426,9 @@ int main(int argc, char** argv)
             adjustments.shadows = gradingSettings.shadows;
             adjustments.midtones = gradingSettings.midtones;
             adjustments.highlights = gradingSettings.highlights;
-            if (curveDirty)
-            {
-                grading::buildCurveLut(gradingSettings, curveLut);
-                curveDirty = false;
-            }
             adjustments.curveLut = curveLut;
             adjustments.curveEnabled = true;
         }
-
         double regionWindowWidth = regionWindow ? regionWindow->width : 0;
         double regionWindowHeight = regionWindow ? regionWindow->height : 0;
         RenderOverrides regionOverrides;
@@ -1452,7 +1478,6 @@ int main(int argc, char** argv)
                 regionOverrides.useCrop = true;
                 regionOverrides.cropOrigin = glm::vec2(u0, v0);
                 regionOverrides.cropSize = glm::vec2(u1 - u0, v1 - v0);
-                regionOverrides.hideScrubber = true;
             }
         }
 
@@ -1498,24 +1523,48 @@ int main(int argc, char** argv)
 
         engine.refreshFpsOverlay();
 
+        bool subtitleRendered = false;
         if (subtitleOverlayLoaded && cli.overlaysEnabled)
         {
-            updateSubtitleOverlay(&engine,
-                                  subtitleOverlayResources,
-                                  subtitleOverlay,
-                                  playbackSeconds,
-                                  fbWidth,
-                                  fbHeight,
-                                  overlayRectCenter,
-                                  overlayRectSize,
-                                  playbackState.overlay.sampler,
-                                  playbackState.overlay.sampler,
-                                  2);
+            subtitleRendered = updateSubtitleOverlay(&engine,
+                                                    subtitleOverlayResources,
+                                                    subtitleOverlay,
+                                                    playbackSeconds,
+                                                    fbWidth,
+                                                    fbHeight,
+                                                    overlayRectCenter,
+                                                    overlayRectSize,
+                                                    playbackState.overlay.image,
+                                                    playbackState.overlay.sampler,
+                                                    playbackState.overlay.sampler,
+                                                    2,
+                                                    cli.subtitleBackground);
+            if (subtitleRendered && kRenderDebugEnabled)
+            {
+                std::cout << "[motive2d] Subtitle overlay blended onto rectangle image" << std::endl;
+            }
         }
 
+        // Point overlay info at the single, final frame that has received every overlay pass.
+        playbackState.overlay.info.overlay.view = playbackState.overlay.image.view;
+        playbackState.overlay.info.overlay.sampler = playbackState.overlay.sampler;
+        playbackState.overlay.info.extent = {fbWidth, fbHeight};
+        playbackState.overlay.info.offset = {0, 0};
+        playbackState.overlay.info.enabled = true;
+
         const ColorAdjustments* adjustmentsPtr = gradingPreviewEnabled ? &adjustments : nullptr;
-        const OverlayImageInfo& fpsOverlayInfoToUse =
-            subtitleOverlayResources.info.enabled ? subtitleOverlayResources.info : playbackState.fpsOverlay.info;
+        if (gradingPreviewEnabled)
+        {
+            std::cout << "[motive2d] Applying grading: exposure=" << adjustments.exposure
+                      << " contrast=" << adjustments.contrast
+                      << " saturation=" << adjustments.saturation
+                      << " preview=" << gradingPreviewEnabled << std::endl;
+        }
+        else
+        {
+            std::cout << "[motive2d] Grading preview OFF - using neutral values" << std::endl;
+        }
+        const OverlayImageInfo& fpsOverlayInfoToUse = playbackState.fpsOverlay.info;
         if (inputWindow)
         {
             inputWindow->renderFrame(playbackState.video.descriptors,
@@ -1545,7 +1594,6 @@ int main(int argc, char** argv)
         if (gradingWindow)
         {
             RenderOverrides gradingOverrides;
-            gradingOverrides.hideScrubber = true;
             OverlayImageInfo disabledFps{};
             gradingWindow->renderFrame(blackVideo,
                                       gradingOverlayInfo,

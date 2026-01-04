@@ -34,7 +34,6 @@ struct VideoPlaybackState
     video::VideoDecoder decoder;
     VideoResources video;
     overlay::OverlayResources overlay;
-    overlay::ImageResource poseOverlayImage;
     overlay::FpsOverlayResources fpsOverlay;
     SubtitleOverlayResources subtitleOverlay;
     video::VideoColorInfo colorInfo;

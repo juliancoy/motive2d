@@ -7,7 +7,7 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
-
+#include <cstdlib>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
@@ -21,6 +21,8 @@ bool gInitialized = false;
 bool gTriedInit = false;
 
 constexpr uint32_t kMinimumFontSize = 12;
+
+const bool kFontDebugLogging = (::getenv("MOTIVE2D_DEBUG_FONTS") != nullptr);
 
 std::filesystem::path locateFont()
 {
@@ -98,17 +100,47 @@ FontBitmap buildFallbackBitmap(const std::string &text)
     bitmap.height = 12;
     bitmap.pixels.assign(static_cast<size_t>(bitmap.width) * bitmap.height * 4, 0);
 
+    // Create a visible fallback: blue background with white text outline
     for (uint32_t y = 0; y < bitmap.height; ++y)
     {
         for (uint32_t x = 0; x < bitmap.width; ++x)
         {
             const size_t idx = (static_cast<size_t>(y) * bitmap.width + x) * 4;
-            bitmap.pixels[idx + 0] = 255;
-            bitmap.pixels[idx + 1] = 0;
-            bitmap.pixels[idx + 2] = 255;
-            bitmap.pixels[idx + 3] = 200;
+            // Blue background for debugging
+            bitmap.pixels[idx + 0] = 0;     // R
+            bitmap.pixels[idx + 1] = 0;     // G
+            bitmap.pixels[idx + 2] = 255;   // B - BLUE for debugging
+            bitmap.pixels[idx + 3] = 200;   // A
         }
     }
+    
+    // Add a simple white X pattern to indicate fallback
+    for (uint32_t i = 0; i < std::min(width, bitmap.height); ++i)
+    {
+        // Diagonal from top-left to bottom-right
+        if (i < width && i < bitmap.height)
+        {
+            size_t idx1 = (static_cast<size_t>(i) * bitmap.width + i) * 4;
+            bitmap.pixels[idx1 + 0] = 255;  // R
+            bitmap.pixels[idx1 + 1] = 255;  // G
+            bitmap.pixels[idx1 + 2] = 255;  // B
+            bitmap.pixels[idx1 + 3] = 255;  // A
+            
+            // Diagonal from top-right to bottom-left
+            size_t x2 = width - 1 - i;
+            if (x2 < width)
+            {
+                size_t idx2 = (static_cast<size_t>(i) * bitmap.width + x2) * 4;
+                bitmap.pixels[idx2 + 0] = 255;  // R
+                bitmap.pixels[idx2 + 1] = 255;  // G
+                bitmap.pixels[idx2 + 2] = 255;  // B
+                bitmap.pixels[idx2 + 3] = 255;  // A
+            }
+        }
+    }
+    
+    std::cout << "[Fonts] Using fallback bitmap for text: \"" << text << "\" (size: " 
+              << width << "x" << bitmap.height << ")" << std::endl;
     return bitmap;
 }
 } // namespace
@@ -118,11 +150,18 @@ FontBitmap renderText(const std::string &text, uint32_t pixelHeight)
     FontBitmap bitmap;
     if (text.empty())
     {
+    std::cout << "[Fonts] renderText called with empty text" << std::endl;
         return bitmap;
+    }
+
+    if (kFontDebugLogging)
+    {
+        std::cout << "[Fonts] Rendering text: \"" << text << "\" at size: " << pixelHeight << std::endl;
     }
 
     if (!initializeFontFace())
     {
+        std::cout << "[Fonts] Font initialization failed, using fallback" << std::endl;
         return buildFallbackBitmap(text);
     }
 
@@ -136,6 +175,7 @@ FontBitmap renderText(const std::string &text, uint32_t pixelHeight)
     const auto advanceChar = [&](unsigned long codepoint) {
         if (FT_Load_Char(gFace, codepoint, FT_LOAD_RENDER) != 0)
         {
+            std::cout << "[Fonts] Failed to load character: " << static_cast<char>(codepoint) << std::endl;
             return;
         }
         FT_GlyphSlot slot = gFace->glyph;
@@ -157,12 +197,18 @@ FontBitmap renderText(const std::string &text, uint32_t pixelHeight)
 
     if (penX <= 0)
     {
-        return bitmap;
+        std::cout << "[Fonts] penX <= 0, using fallback" << std::endl;
+        return buildFallbackBitmap(text);
     }
 
     bitmap.width = static_cast<uint32_t>(std::max(1, penX));
     bitmap.height = static_cast<uint32_t>(std::max(1, maxAboveBaseline + maxBelowBaseline));
     bitmap.pixels.assign(static_cast<size_t>(bitmap.width) * bitmap.height * 4, 0);
+
+    if (kFontDebugLogging)
+    {
+        std::cout << "[Fonts] Bitmap dimensions: " << bitmap.width << "x" << bitmap.height << std::endl;
+    }
 
     int penPosition = 0;
     for (unsigned char c : text)
@@ -173,12 +219,19 @@ FontBitmap renderText(const std::string &text, uint32_t pixelHeight)
         }
         if (FT_Load_Char(gFace, static_cast<unsigned long>(c), FT_LOAD_RENDER) != 0)
         {
+            std::cout << "[Fonts] Failed to render character: " << c << std::endl;
             continue;
         }
         FT_GlyphSlot slot = gFace->glyph;
         const FT_Bitmap &glyphBitmap = slot->bitmap;
         const int xOrigin = penPosition + slot->bitmap_left;
         const int yOrigin = maxAboveBaseline - slot->bitmap_top;
+
+        if (kFontDebugLogging)
+        {
+            std::cout << "[Fonts] Character '" << c << "' at (" << xOrigin << "," << yOrigin 
+                      << ") size: " << glyphBitmap.width << "x" << glyphBitmap.rows << std::endl;
+        }
 
         for (int row = 0; row < glyphBitmap.rows; ++row)
         {
@@ -209,6 +262,20 @@ FontBitmap renderText(const std::string &text, uint32_t pixelHeight)
 
         penPosition += (slot->advance.x >> 6);
         penPosition += 1;
+    }
+
+    // Count non-zero alpha pixels for debugging
+    size_t nonZeroAlpha = 0;
+    for (size_t i = 3; i < bitmap.pixels.size(); i += 4)
+    {
+        if (bitmap.pixels[i] > 0)
+        {
+            nonZeroAlpha++;
+        }
+    }
+    if (kFontDebugLogging)
+    {
+        std::cout << "[Fonts] Rendered text with " << nonZeroAlpha << " non-zero alpha pixels" << std::endl;
     }
 
     return bitmap;
