@@ -7,6 +7,7 @@
 #include <array>
 #include <cstring>
 #include <stdexcept>
+#include <nlohmann/json.hpp>
 
 ColorGrading::ColorGrading(Display2D* display)
     : display_(display), engine_(display ? display->engine : nullptr)
@@ -266,7 +267,6 @@ void ColorGrading::uploadCurveData(const std::array<float, kCurveLutSize>& curve
 void ColorGrading::dispatch(VkCommandBuffer commandBuffer,
                             VkPipelineLayout pipelineLayout,
                             VkDescriptorSet descriptorSet,
-                            const CropPushConstants& pushConstants,
                             uint32_t groupX,
                             uint32_t groupY)
 {

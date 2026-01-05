@@ -1,25 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <deque>
-#include <filesystem>
-#include <optional>
-#include <string>
-#include <vector>
-#include <chrono>
-
-#include <vulkan/vulkan.h>
-
-#include "fps.h"
-#include "text.h"
-#include "subtitle.h"
-
-// Forward declarations
-class Engine2D;
-
-#pragma once
-
-#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -29,18 +10,10 @@ class Engine2D;
 #include <mutex>
 #include <thread>
 #include <atomic>
+#include <chrono>
+#include "video_frame_utils.h"
 
 #include <vulkan/vulkan.h>
-
-
-enum class PrimitiveYuvFormat : uint32_t {
-    None = 0,
-    NV12 = 1,
-    Planar420 = 2,
-    Planar422 = 3,
-    Planar444 = 4
-};
-
 
 extern "C" {
 struct AVFormatContext;
@@ -48,99 +21,113 @@ struct AVCodecContext;
 struct AVFrame;
 struct AVPacket;
 struct AVBufferRef;
+struct AVCodec;
 #include <libavutil/pixfmt.h>
 #include <libavutil/hwcontext.h>
 }
 
+// Forward declarations
+class Engine2D;
+
 namespace video {
-
-struct VulkanInteropContext {
-    VkInstance instance = VK_NULL_HANDLE;
-    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-    VkDevice device = VK_NULL_HANDLE;
-    VkQueue graphicsQueue = VK_NULL_HANDLE;
-    uint32_t graphicsQueueFamilyIndex = 0;
-    VkQueue videoQueue = VK_NULL_HANDLE;
-    uint32_t videoQueueFamilyIndex = 0;
-};
-
-std::vector<std::string> listAvailableHardwareDevices();
-enum class VideoColorSpace : uint32_t {
-    BT601 = 0,
-    BT709 = 1,
-    BT2020 = 2
-};
-
-enum class VideoColorRange : uint32_t {
-    Limited = 0,
-    Full = 1
-};
-
-struct VideoColorInfo {
-    VideoColorSpace colorSpace = VideoColorSpace::BT709;
-    VideoColorRange colorRange = VideoColorRange::Limited;
-};
-
-struct Nv12Overlay {
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t offsetX = 0;
-    uint32_t offsetY = 0;
-    uint32_t uvWidth = 0;
-    uint32_t uvHeight = 0;
-    std::vector<uint8_t> yPlane;
-    std::vector<uint8_t> yAlpha;
-    std::vector<uint8_t> uvPlane;
-    std::vector<uint8_t> uvAlpha;
-
-    bool isValid() const
-    {
-        return width > 0 && height > 0 && !yPlane.empty() && !uvPlane.empty();
-    }
-};
-
-VideoColorInfo deriveVideoColorInfo();
-Nv12Overlay convertOverlayToNv12(const OverlayBitmap& bitmap, const VideoColorInfo& colorInfo);
-void applyNv12Overlay(std::vector<uint8_t>& nv12Buffer,
-                      uint32_t frameWidth,
-                      uint32_t frameHeight,
-                      const Nv12Overlay& overlay);
-void applyOverlayToDecodedFrame(std::vector<uint8_t>& buffer,
-                                const VideoDecoder& decoder,
-                                const Nv12Overlay& overlay);
-
-bool debugLoggingEnabled();
-
-} // namespace video
-
+    struct VulkanInteropContext {
+        VkInstance instance = VK_NULL_HANDLE;
+        VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+        VkDevice device = VK_NULL_HANDLE;
+        VkQueue graphicsQueue = VK_NULL_HANDLE;
+        uint32_t graphicsQueueFamilyIndex = 0;
+        VkQueue videoQueue = VK_NULL_HANDLE;
+        uint32_t videoQueueFamilyIndex = 0;
+    };
+}
 
 enum class DecodeImplementation {
     Software = 0,
     Vulkan = 1
 };
 
+struct DecoderInitParams {
+    DecodeImplementation implementation = DecodeImplementation::Software;
+    std::optional<video::VulkanInteropContext> vulkanInterop;
+    bool requireGraphicsQueue = true;
+    bool debugLogging = false;
+};
 
-class Decoder()
-{
+struct DecodedFrame {
+    std::vector<uint8_t> buffer;
+    double ptsSeconds = 0.0;
+    
+    struct VulkanSurface {
+        bool valid = false;
+        uint32_t planes = 0;
+        VkImage images[2]{};
+        VkImageLayout layouts[2]{};
+        VkSemaphore semaphores[2]{};
+        uint64_t semaphoreValues[2]{};
+        uint32_t queueFamily[2]{};
+        VkFormat planeFormats[2]{};
+        uint32_t width = 0;
+        uint32_t height = 0;
+    } vkSurface;
+};
 
-    Engine2D* engine = nullptr;
-    ImageResource lumaImage;
-    ImageResource chromaImage;
-    float lastDisplayedSeconds;
-    float lastDisplayedSeconds;
+struct VideoResources {
     VkSampler sampler = VK_NULL_HANDLE;
     VkImageView externalLumaView = VK_NULL_HANDLE;
     VkImageView externalChromaView = VK_NULL_HANDLE;
     bool usingExternal = false;
-    Engine2D* engine = nullptr;
-    bool playing;
-    std::deque<DecodedFrame> pendingFrames;
-    bool playbackClockInitialized = false;
-    double basePtsSeconds = 0.0;
-    double lastFramePtsSeconds = 0.0;
-    double lastDisplayedSeconds;
-    double lastDisplayedSeconds = 0.0;
-    std::chrono::steady_clock::time_point lastFrameRenderTime;
+    
+    // Add other resources needed for rendering
+};
+
+class Decoder
+{
+public:
+    Decoder(const std::filesystem::path& videoPath, const DecoderInitParams& initParams);
+    ~Decoder();
+    
+    // Public interface
+    bool initialize();
+    bool seek(float timeSeconds);
+    bool acquireDecodedFrame(DecodedFrame& outFrame);
+    bool startAsyncDecoding(size_t maxBufferedFrames = 12);
+    void stopAsyncDecoding();
+    
+    // Frame upload and playback
+    bool uploadDecodedFrame(Engine2D* engine, const DecodedFrame& frame);
+    double advancePlayback();
+    std::string hardwareInitFailureReason;
+    
+    // Getters
+    int getWidth() const { return width; }
+    int getHeight() const { return height; }
+    double getDuration() const { return durationSeconds; }
+    double getCurrentTime() const { return currentTimeSeconds; }
+    bool isPlaying() const { return playing; }
+    bool isStopRequested() const { return stopRequested.load(); }
+    
+    // Benchmark
+    static int runDecodeOnlyBenchmark(const std::filesystem::path& videoPath,
+                                      const std::optional<bool>& swapUvOverride,
+                                      double benchmarkSeconds = 5.0);
+    bool configureFormatForPixelFormat(AVPixelFormat pix_fmt);
+
+    // Private methods
+    bool initializeVideoDecoder(const std::filesystem::path& videoPath, const DecoderInitParams& initParams);
+    bool seekVideoDecoder(double targetSeconds);
+    bool decodeNextFrame(DecodedFrame& decodedFrame, bool copyFrameBuffer = true);
+    void pumpDecodedFrames();
+    void cleanupVideoDecoder();
+    
+    // Helper methods
+    VkSampler createLinearClampSampler(Engine2D* engine);
+    void destroyExternalVideoViews(Engine2D* engine, VideoResources& video);
+    bool waitForVulkanFrameReady(Engine2D* engine, const DecodedFrame::VulkanSurface& surface);
+    
+    // Async decoding
+    void asyncDecodeLoop();
+    
+    // FFmpeg resources
     AVFormatContext* formatCtx = nullptr;
     AVCodecContext* codecCtx = nullptr;
     AVFrame* frame = nullptr;
@@ -148,17 +135,26 @@ class Decoder()
     AVPacket* packet = nullptr;
     AVBufferRef* hwDeviceCtx = nullptr;
     AVBufferRef* hwFramesCtx = nullptr;
+    
+    // Video properties
     int videoStreamIndex = -1;
     int width = 0;
     int height = 0;
-    int bufferSize = 0;
-    int yPlaneSize = 0;
-    int uvPlaneSize = 0;
-    AVColorSpace colorSpace = AVCOL_SPC_UNSPECIFIED;
-    AVColorRange colorRange = AVCOL_RANGE_UNSPECIFIED;
+    double durationSeconds = 0.0;
+    double currentTimeSeconds = 0.0;
     double fps = 30.0;
-    bool draining = false;
+    AVRational streamTimeBase{1, 1};
+    
+    // Decoding state
     std::atomic<bool> finished{false};
+    std::atomic<bool> draining{false};
+    std::atomic<bool> stopRequested{false};
+    std::atomic<bool> threadRunning{false};
+    std::atomic<int64_t> seekTargetMicroseconds{-1};
+    uint64_t framesDecoded = 0;
+    double fallbackPtsSeconds = 0.0;
+    
+    // Format info
     DecodeImplementation implementation = DecodeImplementation::Software;
     AVHWDeviceType hwDeviceType = AV_HWDEVICE_TYPE_NONE;
     AVPixelFormat hwPixelFormat = AV_PIX_FMT_NONE;
@@ -166,6 +162,8 @@ class Decoder()
     AVPixelFormat requestedSwPixelFormat = AV_PIX_FMT_NONE;
     std::string implementationName = "Software";
     PrimitiveYuvFormat outputFormat = PrimitiveYuvFormat::NV12;
+    
+    // YUV format details
     bool planarYuv = false;
     bool swapChromaUV = false;
     bool chromaInterleaved = false;
@@ -177,78 +175,39 @@ class Decoder()
     uint32_t bitDepth = 8;
     size_t yPlaneBytes = 0;
     size_t uvPlaneBytes = 0;
+    int bufferSize = 0;
+    
+    // Color info
+    AVColorSpace colorSpace = AVCOL_SPC_UNSPECIFIED;
+    AVColorRange colorRange = AVCOL_RANGE_UNSPECIFIED;
+    
     // Async decoding
     std::thread decodeThread;
     std::mutex frameMutex;
     std::condition_variable frameCond;
-    AVRational streamTimeBase{1, 1};
-    double fallbackPtsSeconds = 0.0;
-    uint64_t framesDecoded = 0;
     std::deque<DecodedFrame> frameQueue;
     size_t maxBufferedFrames = 12;
     bool asyncDecoding = false;
-    std::atomic<bool> stopRequested{false};
-    std::atomic<bool> threadRunning{false};
-    std::atomic<int64_t> seekTargetMicroseconds{-1};
-    std::string hardwareInitFailureReason;
     
-    Decoder(
-    DecodeImplementation implementation,
-    std::optional<VulkanInteropContext>,
-    bool requireGraphicsQueue = true,
-    bool debugLogging = false);
-
-    std::optional<std::filesystem::path> locateVideoFile(const std::string& filename);
-    bool initializeVideoDecoder(const std::filesystem::path& videoPath,
-                                VideoDecoder& decoder,
-                                const DecoderInitParams& initParams = DecoderInitParams{});
-    bool seekVideoDecoder(VideoDecoder& decoder, double targetSeconds);
-    struct DecodedFrame {
-        std::vector<uint8_t> buffer;
-        double ptsSeconds = 0.0;
-        struct VulkanSurface {
-            bool valid = false;
-            uint32_t planes = 0;
-            VkImage images[2]{};
-            VkImageLayout layouts[2]{};
-            VkSemaphore semaphores[2]{};
-            uint64_t semaphoreValues[2]{};
-            uint32_t queueFamily[2]{};
-            VkFormat planeFormats[2]{};
-            uint32_t width = 0;
-            uint32_t height = 0;
-        } vkSurface;
-    };
-
-    bool decodeNextFrame(VideoDecoder& decoder,
-                        DecodedFrame& decodedFrame,
-                        bool copyFrameBuffer = true);
-    bool startAsyncDecoding(VideoDecoder& decoder, size_t maxBufferedFrames = 12);
-    bool acquireDecodedFrame(VideoDecoder& decoder, DecodedFrame& outFrame);
-    void stopAsyncDecoding(VideoDecoder& decoder);
-    void cleanupVideoDecoder(VideoDecoder& decoder);
-
-    // Sampler creation
-    VkSampler createLinearClampSampler(Engine2D* engine);
-
-    // External video view management
-    void destroyExternalVideoViews(Engine2D* engine, VideoResources& video);
-
-    // Vulkan frame synchronization
-    bool waitForVulkanFrameReady(Engine2D* engine, const DecodedFrame::VulkanSurface& surface);
-
-    // Frame upload and playback
-    bool uploadDecodedFrame();
-
-    bool initializeVideoPlayback();
-
-    void pumpDecodedFrames();
-
-    double advancePlayback();
-
-    // Benchmark function
-    int runDecodeOnlyBenchmark(const std::filesystem::path& videoPath,
-                            const std::optional<bool>& swapUvOverride,
-                            double benchmarkSeconds = 5.0);
-
-}
+    // Playback state
+    bool playing = false;
+    std::deque<DecodedFrame> pendingFrames;
+    bool playbackClockInitialized = false;
+    double basePtsSeconds = 0.0;
+    double lastFramePtsSeconds = 0.0;
+    double lastDisplayedSeconds = 0.0;
+    std::chrono::steady_clock::time_point lastFrameRenderTime;
+    
+    // Resources
+    VideoResources videoResources;
+    void copyDecodedFrameToBuffer(const AVFrame *frame, std::vector<uint8_t> &buffer);
+    bool configureDecodeImplementation(
+                                        const AVCodec *codec,
+                                        DecodeImplementation decodeImplementation,
+                                        const std::optional<video::VulkanInteropContext> &vulkanInterop,
+                                        bool requireGraphicsQueue,
+                                        bool debugLogging);
+private:
+    // Engine reference
+    Engine2D* engine = nullptr;
+};

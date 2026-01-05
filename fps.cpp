@@ -12,39 +12,21 @@
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 
-#include "composite_bitmap.hpp"
+#include "composite_bitmap.h"
 #include "engine2d.h"
 #include "text.h"
 #include "utils.h"
+#include "engine2d.h"
 #include "widgets.hpp"
 
-namespace
-{
 widgets::WidgetRenderer& fpsWidgetRenderer()
 {
     static widgets::WidgetRenderer renderer{};
     return renderer;
 }
 
-bool ensureFpsWidgetRenderer(Engine2D* engine)
+FpsOverlay::FpsOverlay(Engine2D* engine)
 {
-    static bool initialized = false;
-    static bool failed = false;
-    if (initialized)
-    {
-        return true;
-    }
-    if (failed)
-    {
-        return false;
-    }
-    if (!widgets::initializeWidgetRenderer(engine, fpsWidgetRenderer()))
-    {
-        failed = true;
-        return false;
-    }
-    initialized = true;
-    return true;
 }
 
 CompositeBitmapCompute& fpsBitmapCompute()
@@ -53,53 +35,25 @@ CompositeBitmapCompute& fpsBitmapCompute()
     return compute;
 }
 
-bool ensureFpsCompositeCompute(Engine2D* engine)
-{
-    static bool initialized = false;
-    static bool failed = false;
-    if (initialized)
-    {
-        return true;
-    }
-    if (failed)
-    {
-        return false;
-    }
-    if (!initializeCompositeBitmapCompute(engine, fpsBitmapCompute()))
-    {
-        failed = true;
-        return false;
-    }
-    initialized = true;
-    return true;
-}
-
-std::string formatFpsText(float fps)
+std::string FpsOverlay::formatFpsText(float fps)
 {
     char buffer[64];
     std::snprintf(buffer, sizeof(buffer), "%.1f FPS", fps);
     return std::string(buffer);
 }
-} // namespace
 
-namespace overlay
-{
-
-void updateFpsOverlay(Engine2D* engine,
-                      FpsOverlayResources& fpsOverlay,
-                      VkSampler overlaySampler,
-                      VkSampler fallbackSampler,
+void updateFpsOverlay(
                       float fpsValue,
                       uint32_t fbWidth,
                       uint32_t fbHeight)
 {
-    fpsOverlay.lastFpsValue = fpsValue;
-    fpsOverlay.lastRefWidth = fbWidth;
-    fpsOverlay.lastRefHeight = fbHeight;
+    lastFpsValue = fpsValue;
+    lastRefWidth = fbWidth;
+    lastRefHeight = fbHeight;
 
     if (!ensureFpsWidgetRenderer(engine) || !ensureFpsCompositeCompute(engine))
     {
-        fpsOverlay.info.enabled = false;
+        info.enabled = false;
         return;
     }
 
@@ -107,7 +61,7 @@ void updateFpsOverlay(Engine2D* engine,
     fonts::FontBitmap bitmap = fonts::renderText(text, 26u);
     if (bitmap.width == 0 || bitmap.height == 0 || bitmap.pixels.empty())
     {
-        fpsOverlay.info.enabled = false;
+        info.enabled = false;
         return;
     }
 
@@ -119,14 +73,14 @@ void updateFpsOverlay(Engine2D* engine,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     bool recreated = false;
     if (!ensureImageResource(engine,
-                             fpsOverlay.image,
+                             image,
                              overlayWidth,
                              overlayHeight,
                              VK_FORMAT_R8G8B8A8_UNORM,
                              recreated,
                              usage))
     {
-        fpsOverlay.info.enabled = false;
+        info.enabled = false;
         return;
     }
     (void)recreated;
@@ -159,19 +113,19 @@ void updateFpsOverlay(Engine2D* engine,
 
     if (!widgets::runWidgetRenderer(engine,
                                     fpsWidgetRenderer(),
-                                    fpsOverlay.image,
+                                    image,
                                     overlayWidth,
                                     overlayHeight,
                                     commands,
                                     true))
     {
-        fpsOverlay.info.enabled = false;
+        info.enabled = false;
         return;
     }
 
     if (!compositeBitmap(engine,
                                   fpsBitmapCompute(),
-                                  fpsOverlay.image,
+                                  image,
                                   overlayWidth,
                                   overlayHeight,
                                   bitmap.pixels.data(),
@@ -184,18 +138,44 @@ void updateFpsOverlay(Engine2D* engine,
                                   glm::vec2(0.0f, 0.0f),
                                   1.0f))
     {
-        fpsOverlay.info.enabled = false;
+        info.enabled = false;
         return;
     }
 
     VkSampler sampler = (overlaySampler != VK_NULL_HANDLE) ? overlaySampler : fallbackSampler;
-    fpsOverlay.info.overlay.view = fpsOverlay.image.view;
-    fpsOverlay.info.overlay.sampler = sampler;
-    fpsOverlay.info.extent = {overlayWidth, overlayHeight};
-    fpsOverlay.info.offset = {16, 16};
-    fpsOverlay.info.enabled = true;
-    fpsOverlay.lastRefWidth = overlayWidth;
-    fpsOverlay.lastRefHeight = overlayHeight;
+    info.overlay.view = image.view;
+    info.overlay.sampler = sampler;
+    info.extent = {overlayWidth, overlayHeight};
+    info.offset = {16, 16};
+    info.enabled = true;
+    lastRefWidth = overlayWidth;
+    lastRefHeight = overlayHeight;
 }
 
-} // namespace overlay
+
+void Engine2D::updateFpsOverlay()
+{
+    if (!videoLoaded)
+    {
+        return;
+    }
+
+    fpsFrameCounter++;
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - fpsLastSample).count();
+
+    if (elapsed >= 500)
+    {
+        currentFps = static_cast<float>(fpsFrameCounter) * 1000.0f / static_cast<float>(elapsed);
+        fpsFrameCounter = 0;
+        fpsLastSample = now;
+
+        updateFpsOverlay(this,
+                                  playbackState.fpsOverlay,
+                                  playbackState.overlay.sampler,
+                                  playbackState.video.sampler,
+                                  currentFps,
+                                  playbackState.lastRefWidth,
+                                  playbackState.lastRefHeight);
+    }
+}

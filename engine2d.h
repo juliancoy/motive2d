@@ -8,19 +8,9 @@
 #include <array>
 #include <vector>
 #include <GLFW/glfw3.h>
-#include "display2d.h"
-#include "decoder.h"
-#include "fps.h"
-#include "color_grading_ui.h"
+#include "crop.h"
 #include "graphicsdevice.h"
-
-
-struct CropRegion {
-    float x = 0.0f;  // normalized 0-1
-    float y = 0.0f;  // normalized 0-1
-    float width = 1.0f;  // normalized 0-1
-    float height = 1.0f; // normalized 0-1
-};
+#include "image_resource.h"
 
 struct RenderOptions {
     bool showScrubber = true;
@@ -30,6 +20,7 @@ struct RenderOptions {
     std::optional<CropRegion> crop;
     float playbackSpeed = 1.0f;
 };
+
 
 class Engine2D {
 public:
@@ -44,6 +35,10 @@ public:
     uint32_t &graphicsQueueFamilyIndex;
     VkQueue &videoQueue;
     uint32_t &videoQueueFamilyIndex;
+    ColorGrading colorGrading;
+    void createComputeResources();
+
+
 
     // Disable copy
     Engine2D(const Engine2D&) = delete;
@@ -91,8 +86,8 @@ public:
 
     void refreshFpsOverlay();
 
-    RectOverlayCompute& getRectOverlayCompute();
-    PoseOverlayCompute& getPoseOverlayCompute();
+    RectOverlay& getRectOverlay();
+    PoseOverlay& getPoseOverlay();
 
     void setDecodeDebugEnabled(bool enabled);
     bool isDecodeDebugEnabled() const;
@@ -119,14 +114,32 @@ public:
     uint32_t getVideoQueueFamilyIndex();
     VkPhysicalDeviceProperties& getDeviceProperties();
 
+bool ensureImageResource(Engine2D* engine,
+                         ImageResource& res,
+                         uint32_t width,
+                         uint32_t height,
+                         VkFormat format,
+                         bool& recreated,
+                         VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+
+void destroyImageResource(Engine2D* engine, ImageResource& res);
+
+bool uploadImageData(Engine2D* engine,
+                     ImageResource& res,
+                     const void* data,
+                     size_t dataSize,
+                     uint32_t width,
+                     uint32_t height,
+                     VkFormat format,
+                     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+
+    void createComputeResources();
  private:
 
-    std::vector<std::unique_ptr<Display2D>> windows;
     bool initialized = false;
     bool glfwInitialized = false;
     
     // Video state
-    VideoPlaybackState playbackState;
     bool videoLoaded = false;
     float duration = 0.0f;
     float currentTime = 0.0f;
@@ -138,8 +151,8 @@ public:
     std::optional<CropRegion> cropRegion;
     
     // Overlay resources
-    RectOverlayCompute rectOverlayCompute;
-    PoseOverlayCompute poseOverlayCompute;
+    RectOverlay rectOverlay;
+    PoseOverlay poseOverlay;
     bool overlayInitialized = false;
     
     // FPS tracking
@@ -148,7 +161,6 @@ public:
     float currentFps = 0.0f;
     
     // Internal methods
-    bool initializeOverlay();
     void updateFpsOverlay();
     void applyGrading(ColorAdjustments& adjustments) const;
     RenderOverrides buildRenderOverrides() const;

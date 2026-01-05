@@ -78,10 +78,8 @@ public:
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    ColorGrading colorGrading;
-
+    
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline scrubPipeline = VK_NULL_HANDLE;
     bool videoPassEnabled = true;
     bool scrubberPassEnabled = true;
@@ -98,7 +96,6 @@ public:
     void createSwapchain();
     void cleanupSwapchain();
     void createCommandResources();
-    void createComputeResources();
     void recreateSwapchain();
     bool shutdownPerformed = false;
 };

@@ -26,7 +26,7 @@ struct RectOverlayPush
     float overlayActive;
 };
 
-Rect~RectOverlay()
+RectOverlay::~RectOverlay()
 {
     if (fence != VK_NULL_HANDLE)
     {
@@ -60,7 +60,7 @@ Rect~RectOverlay()
     }
 }
 
-void Rectrun(Engine2D* engine,
+void RectOverlay::run(
                            const ImageResource& poseSource,
                            ImageResource& target,
                            uint32_t width,
@@ -200,7 +200,7 @@ void Rectrun(Engine2D* engine,
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 }
 
-RectRectOverlay(Engine2D* engine, RectOverlayCompute& comp)
+RectOverlay::RectOverlay(Engine2D* engine)
 {
     device = engine->logicalDevice;
     queue = engine->graphicsQueue;
@@ -217,7 +217,6 @@ RectRectOverlay(Engine2D* engine, RectOverlayCompute& comp)
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create rect overlay descriptor set layout" << std::endl;
-        return false;
     }
 
     std::vector<char> shaderCode;
@@ -228,8 +227,6 @@ RectRectOverlay(Engine2D* engine, RectOverlayCompute& comp)
     catch (const std::exception& ex)
     {
         std::cerr << "[Video2D] " << ex.what() << std::endl;
-        destroyRectOverlayCompute(comp);
-        return false;
     }
 
     VkShaderModule shaderModule = engine->createShaderModule(shaderCode);
@@ -249,8 +246,6 @@ RectRectOverlay(Engine2D* engine, RectOverlayCompute& comp)
     {
         std::cerr << "[Video2D] Failed to create rect overlay pipeline layout" << std::endl;
         vkDestroyShaderModule(device, shaderModule, nullptr);
-        destroyRectOverlayCompute(comp);
-        return false;
     }
 
     VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -266,8 +261,6 @@ RectRectOverlay(Engine2D* engine, RectOverlayCompute& comp)
     {
         std::cerr << "[Video2D] Failed to create rect overlay compute pipeline" << std::endl;
         vkDestroyShaderModule(device, shaderModule, nullptr);
-        destroyRectOverlayCompute(comp);
-        return false;
     }
 
     vkDestroyShaderModule(device, shaderModule, nullptr);
@@ -284,8 +277,6 @@ RectRectOverlay(Engine2D* engine, RectOverlayCompute& comp)
     if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create rect overlay descriptor pool" << std::endl;
-        destroyRectOverlayCompute(comp);
-        return false;
     }
 
     VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -296,8 +287,6 @@ RectRectOverlay(Engine2D* engine, RectOverlayCompute& comp)
     if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to allocate rect overlay descriptor set" << std::endl;
-        destroyRectOverlayCompute(comp);
-        return false;
     }
 
     VkCommandPoolCreateInfo poolCreateInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -306,8 +295,6 @@ RectRectOverlay(Engine2D* engine, RectOverlayCompute& comp)
     if (vkCreateCommandPool(device, &poolCreateInfo, nullptr, &commandPool) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create rect overlay command pool" << std::endl;
-        destroyRectOverlayCompute(comp);
-        return false;
     }
 
     VkCommandBufferAllocateInfo cmdAllocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -317,16 +304,12 @@ RectRectOverlay(Engine2D* engine, RectOverlayCompute& comp)
     if (vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to allocate rect overlay command buffer" << std::endl;
-        destroyRectOverlayCompute(comp);
-        return false;
     }
 
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create rect overlay fence" << std::endl;
-        destroyRectOverlayCompute(comp);
-        return false;
     }
 
 }

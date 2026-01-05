@@ -13,8 +13,19 @@ struct CropPushConstants
     glm::vec2 cropSize;
 };
 
+
+struct CropRegion {
+    float x = 0.0f;  // normalized 0-1
+    float y = 0.0f;  // normalized 0-1
+    float width = 1.0f;  // normalized 0-1
+    float height = 1.0f; // normalized 0-1
+};
+
+
 class Crop
 {
 public:
+    Crop();
+    ~Crop();
     void dispatch();
 };

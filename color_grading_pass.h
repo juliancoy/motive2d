@@ -34,40 +34,6 @@ inline const std::array<float, kCurveLutSize>& identityCurveLut()
     return lut;
 }
 
-struct CropPushConstants
-{
-    glm::vec2 outputSize;
-    glm::vec2 videoSize;
-    glm::vec2 targetOrigin;
-    glm::vec2 targetSize;
-    glm::vec2 cropOrigin;
-    glm::vec2 cropSize;
-    glm::vec2 chromaDiv;
-    uint32_t colorSpace;
-    uint32_t colorRange;
-    uint32_t overlayEnabled;
-    uint32_t fpsOverlayEnabled;
-    glm::vec2 overlayOrigin;
-    glm::vec2 overlaySize;
-    glm::vec2 fpsOverlayOrigin;
-    glm::vec2 fpsOverlaySize;
-    glm::vec4 fpsOverlayBackground;
-    float scrubProgress;
-    float scrubPlaying;
-    uint32_t scrubberEnabled;
-    uint32_t _padScrub0;
-    uint32_t _padScrub1;
-    uint32_t _padScrub2;
-    glm::vec4 grading;
-    glm::vec4 shadows;
-    glm::vec4 midtones;
-    glm::vec4 highlights;
-};
-static_assert(sizeof(CropPushConstants) == 208, "Compute push constants must match shader layout");
-static_assert(offsetof(CropPushConstants, overlayOrigin) == 72, "overlayOrigin offset mismatch with shader");
-static_assert(offsetof(CropPushConstants, fpsOverlayOrigin) == 88, "fpsOverlayOrigin offset mismatch with shader");
-static_assert(offsetof(CropPushConstants, fpsOverlayBackground) == 104, "fpsOverlayBackground offset mismatch with shader");
-
 class ColorGrading
 {
 public:
@@ -88,7 +54,6 @@ public:
     void dispatch(VkCommandBuffer commandBuffer,
                   VkPipelineLayout pipelineLayout,
                   VkDescriptorSet descriptorSet,
-                  const CropPushConstants& pushConstants,
                   uint32_t groupX,
                   uint32_t groupY);
 

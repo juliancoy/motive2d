@@ -62,6 +62,7 @@ include_paths = [
     os.path.abspath(os.path.join(this_dir, "ncnn/include")),
     os.path.abspath(os.path.join(this_dir, "ncnn/src")),
     os.path.abspath(os.path.join(this_dir, "ncnn/build/src")),
+    os.path.abspath(os.path.join(this_dir, "nlohmann_json/include")),
 ]
 ffmpeg_lib_dir = os.path.join(ffmpeg_install_dir, "lib")
 lib_paths = [

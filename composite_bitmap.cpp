@@ -1,4 +1,4 @@
-#include "composite_bitmap.hpp"
+#include "composite_bitmap.h"
 
 #include "debug_logging.h"
 #include "engine2d.h"

@@ -9,8 +9,10 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+#include "image_resource.h"
 #include "color_adjustments.h"
 #include "display2d.h"
+#include "engine2d.h"
 #include "fps.h"
 
 class Engine2D;

@@ -1,4 +1,11 @@
 #include "crop.h"
+Crop::Crop()
+{
+}
+
+Crop::~Crop()
+{
+}
 
 void Crop::dispatch()
 {
@@ -20,5 +27,8 @@ void Crop::dispatch()
     // Clamp overlay placement to the current output extent to avoid off-screen coordinates
     uint32_t maxOverlayW = std::max(1u, swapchainExtent.width);
     uint32_t maxOverlayH = std::max(1u, swapchainExtent.height);
+
+    vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CropPushConstants), &cropPushConstants);
+
 
 }

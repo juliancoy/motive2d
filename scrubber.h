@@ -15,13 +15,19 @@ struct ScrubberPushConstants
     float _pad = 0.0f;
 };
 
-VkPipeline createScrubberPipeline(Engine2D* engine, VkPipelineLayout pipelineLayout);
-void destroyScrubberPipeline(Engine2D* engine, VkPipeline pipeline);
-
-void dispatchScrubberPass(VkCommandBuffer commandBuffer,
-                          VkPipeline pipeline,
-                          VkPipelineLayout pipelineLayout,
-                          VkDescriptorSet descriptorSet,
-                          const ScrubberPushConstants& pushConstants,
-                          uint32_t groupX,
-                          uint32_t groupY);
+class Scrubber
+{
+public:
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    Scrubber(Engine2D *engine);
+    ~Scrubber();
+    Engine2D *engine;
+    VkPipeline pipeline;
+    VkCommandBuffer commandBuffer;
+    VkPipelineLayout pipelineLayout;
+    VkDescriptorSet descriptorSet;
+    const ScrubberPushConstants &pushConstants;
+    void Run(
+        uint32_t groupX,
+        uint32_t groupY);
+};
