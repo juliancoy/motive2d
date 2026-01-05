@@ -1,4 +1,7 @@
-#include "overlay.hpp"
+#include "debug_logging.h"
+#include "engine2d.h"
+#include "rect_overlay.h"
+#include "fps.h"
 
 #include <array>
 #include <algorithm>
@@ -10,13 +13,8 @@
 #include <vulkan/vulkan.h>
 #include <glm/glm.hpp>
 
-#include "engine2d.h"
 #include "utils.h"
 
-namespace overlay
-{
-namespace
-{
 struct RectOverlayPush
 {
     glm::vec2 outputSize;
@@ -27,44 +25,42 @@ struct RectOverlayPush
     float detectionEnabled;
     float overlayActive;
 };
-} // namespace
 
-void destroyRectOverlayCompute(RectOverlayCompute& comp)
+Rect~RectOverlay()
 {
-    if (comp.fence != VK_NULL_HANDLE)
+    if (fence != VK_NULL_HANDLE)
     {
-        vkDestroyFence(comp.device, comp.fence, nullptr);
-        comp.fence = VK_NULL_HANDLE;
+        vkDestroyFence(device, fence, nullptr);
+        fence = VK_NULL_HANDLE;
     }
-    if (comp.commandPool != VK_NULL_HANDLE)
+    if (commandPool != VK_NULL_HANDLE)
     {
-        vkDestroyCommandPool(comp.device, comp.commandPool, nullptr);
-        comp.commandPool = VK_NULL_HANDLE;
+        vkDestroyCommandPool(device, commandPool, nullptr);
+        commandPool = VK_NULL_HANDLE;
     }
-    if (comp.descriptorPool != VK_NULL_HANDLE)
+    if (descriptorPool != VK_NULL_HANDLE)
     {
-        vkDestroyDescriptorPool(comp.device, comp.descriptorPool, nullptr);
-        comp.descriptorPool = VK_NULL_HANDLE;
+        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        descriptorPool = VK_NULL_HANDLE;
     }
-    if (comp.pipeline != VK_NULL_HANDLE)
+    if (pipeline != VK_NULL_HANDLE)
     {
-        vkDestroyPipeline(comp.device, comp.pipeline, nullptr);
-        comp.pipeline = VK_NULL_HANDLE;
+        vkDestroyPipeline(device, pipeline, nullptr);
+        pipeline = VK_NULL_HANDLE;
     }
-    if (comp.pipelineLayout != VK_NULL_HANDLE)
+    if (pipelineLayout != VK_NULL_HANDLE)
     {
-        vkDestroyPipelineLayout(comp.device, comp.pipelineLayout, nullptr);
-        comp.pipelineLayout = VK_NULL_HANDLE;
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        pipelineLayout = VK_NULL_HANDLE;
     }
-    if (comp.descriptorSetLayout != VK_NULL_HANDLE)
+    if (descriptorSetLayout != VK_NULL_HANDLE)
     {
-        vkDestroyDescriptorSetLayout(comp.device, comp.descriptorSetLayout, nullptr);
-        comp.descriptorSetLayout = VK_NULL_HANDLE;
+        vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+        descriptorSetLayout = VK_NULL_HANDLE;
     }
 }
 
-void runRectOverlayCompute(Engine2D* engine,
-                           RectOverlayCompute& comp,
+void Rectrun(Engine2D* engine,
                            const ImageResource& poseSource,
                            ImageResource& target,
                            uint32_t width,
@@ -76,29 +72,29 @@ void runRectOverlayCompute(Engine2D* engine,
                            float detectionEnabled,
                            float overlayActive)
 {
-    std::cout << "[RectOverlay] Starting rectangle overlay compute" << std::endl;
-    std::cout << "[RectOverlay] Pose source image: " << poseSource.image 
-              << " (view: " << poseSource.view << ")" << std::endl;
-    std::cout << "[RectOverlay] Target image: " << target.image 
-              << " (view: " << target.view << ")" << std::endl;
-    std::cout << "[RectOverlay] Target dimensions: " << width << "x" << height << std::endl;
-    std::cout << "[RectOverlay] Rectangle center: (" << rectCenter.x << ", " << rectCenter.y 
-              << "), size: (" << rectSize.x << "x" << rectSize.y << ")" << std::endl;
-    std::cout << "[RectOverlay] Overlay active: " << overlayActive 
-              << ", detection enabled: " << detectionEnabled << std::endl;
+    LOG_DEBUG(std::cout << "[RectOverlay] Starting rectangle overlay compute" << std::endl);
+    LOG_DEBUG(std::cout << "[RectOverlay] Pose source image: " << poseSource.image 
+              << " (view: " << poseSource.view << ")" << std::endl);
+    LOG_DEBUG(std::cout << "[RectOverlay] Target image: " << target.image 
+              << " (view: " << target.view << ")" << std::endl);
+    LOG_DEBUG(std::cout << "[RectOverlay] Target dimensions: " << width << "x" << height << std::endl);
+    LOG_DEBUG(std::cout << "[RectOverlay] Rectangle center: (" << rectCenter.x << ", " << rectCenter.y 
+              << "), size: (" << rectSize.x << "x" << rectSize.y << ")" << std::endl);
+    LOG_DEBUG(std::cout << "[RectOverlay] Overlay active: " << overlayActive 
+              << ", detection enabled: " << detectionEnabled << std::endl);
     
     bool recreated = false;
     if (!ensureImageResource(engine, target, width, height, VK_FORMAT_R8G8B8A8_UNORM, recreated,
                              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))
     {
-        std::cout << "[RectOverlay] Failed to ensure image resource" << std::endl;
+        LOG_DEBUG(std::cout << "[RectOverlay] Failed to ensure image resource" << std::endl);
         return;
     }
 
-    vkResetCommandBuffer(comp.commandBuffer, 0);
+    vkResetCommandBuffer(commandBuffer, 0);
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(comp.commandBuffer, &beginInfo);
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
 
     RectOverlayPush push{glm::vec2(static_cast<float>(width), static_cast<float>(height)),
                          rectCenter,
@@ -115,13 +111,13 @@ void runRectOverlayCompute(Engine2D* engine,
 
     VkWriteDescriptorSet imageWrite{};
     imageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    imageWrite.dstSet = comp.descriptorSet;
+    imageWrite.dstSet = descriptorSet;
     imageWrite.dstBinding = 0;
     imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     imageWrite.descriptorCount = 1;
     imageWrite.pImageInfo = &imageInfo;
 
-    vkUpdateDescriptorSets(comp.device,
+    vkUpdateDescriptorSets(device,
                            1,
                            &imageWrite,
                            0,
@@ -148,7 +144,7 @@ void runRectOverlayCompute(Engine2D* engine,
                                         ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
                                         : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 
-    vkCmdPipelineBarrier(comp.commandBuffer,
+    vkCmdPipelineBarrier(commandBuffer,
                          srcStage,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0,
@@ -156,17 +152,17 @@ void runRectOverlayCompute(Engine2D* engine,
                          0, nullptr,
                          1, &toGeneralBarrier);
 
-    vkCmdBindPipeline(comp.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, comp.pipeline);
-    vkCmdBindDescriptorSets(comp.commandBuffer,
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(commandBuffer,
                             VK_PIPELINE_BIND_POINT_COMPUTE,
-                            comp.pipelineLayout,
+                            pipelineLayout,
                             0,
                             1,
-                            &comp.descriptorSet,
+                            &descriptorSet,
                             0,
                             nullptr);
-    vkCmdPushConstants(comp.commandBuffer,
-                       comp.pipelineLayout,
+    vkCmdPushConstants(commandBuffer,
+                       pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT,
                        0,
                        sizeof(RectOverlayPush),
@@ -174,7 +170,7 @@ void runRectOverlayCompute(Engine2D* engine,
 
     const uint32_t groupX = (width + 15) / 16;
     const uint32_t groupY = (height + 15) / 16;
-    vkCmdDispatch(comp.commandBuffer, groupX, groupY, 1);
+    vkCmdDispatch(commandBuffer, groupX, groupY, 1);
 
     VkImageMemoryBarrier toReadBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     toReadBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -186,7 +182,7 @@ void runRectOverlayCompute(Engine2D* engine,
     toReadBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     toReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-    vkCmdPipelineBarrier(comp.commandBuffer,
+    vkCmdPipelineBarrier(commandBuffer,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0,
@@ -194,20 +190,20 @@ void runRectOverlayCompute(Engine2D* engine,
                          0, nullptr,
                          1, &toReadBarrier);
 
-    vkEndCommandBuffer(comp.commandBuffer);
+    vkEndCommandBuffer(commandBuffer);
 
-    vkResetFences(comp.device, 1, &comp.fence);
+    vkResetFences(device, 1, &fence);
     VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &comp.commandBuffer;
-    vkQueueSubmit(engine->graphicsQueue, 1, &submitInfo, comp.fence);
-    vkWaitForFences(comp.device, 1, &comp.fence, VK_TRUE, UINT64_MAX);
+    submitInfo.pCommandBuffers = &commandBuffer;
+    vkQueueSubmit(engine->graphicsQueue, 1, &submitInfo, fence);
+    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 }
 
-bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
+RectRectOverlay(Engine2D* engine, RectOverlayCompute& comp)
 {
-    comp.device = engine->logicalDevice;
-    comp.queue = engine->graphicsQueue;
+    device = engine->logicalDevice;
+    queue = engine->graphicsQueue;
 
     VkDescriptorSetLayoutBinding binding{};
     binding.binding = 0;
@@ -218,7 +214,7 @@ bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
     VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layoutInfo.bindingCount = 1;
     layoutInfo.pBindings = &binding;
-    if (vkCreateDescriptorSetLayout(comp.device, &layoutInfo, nullptr, &comp.descriptorSetLayout) != VK_SUCCESS)
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create rect overlay descriptor set layout" << std::endl;
         return false;
@@ -227,7 +223,7 @@ bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
     std::vector<char> shaderCode;
     try
     {
-        shaderCode = readSPIRVFile("shaders/overlay_rect.comp.spv");
+        shaderCode = readSPIRVFile("shaders/overlay_rect.spv");
     }
     catch (const std::exception& ex)
     {
@@ -245,14 +241,14 @@ bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &comp.descriptorSetLayout;
+    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushRange;
 
-    if (vkCreatePipelineLayout(comp.device, &pipelineLayoutInfo, nullptr, &comp.pipelineLayout) != VK_SUCCESS)
+    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create rect overlay pipeline layout" << std::endl;
-        vkDestroyShaderModule(comp.device, shaderModule, nullptr);
+        vkDestroyShaderModule(device, shaderModule, nullptr);
         destroyRectOverlayCompute(comp);
         return false;
     }
@@ -264,17 +260,17 @@ bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
 
     VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     pipelineInfo.stage = stageInfo;
-    pipelineInfo.layout = comp.pipelineLayout;
+    pipelineInfo.layout = pipelineLayout;
 
-    if (vkCreateComputePipelines(comp.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &comp.pipeline) != VK_SUCCESS)
+    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create rect overlay compute pipeline" << std::endl;
-        vkDestroyShaderModule(comp.device, shaderModule, nullptr);
+        vkDestroyShaderModule(device, shaderModule, nullptr);
         destroyRectOverlayCompute(comp);
         return false;
     }
 
-    vkDestroyShaderModule(comp.device, shaderModule, nullptr);
+    vkDestroyShaderModule(device, shaderModule, nullptr);
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -285,7 +281,7 @@ bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
 
-    if (vkCreateDescriptorPool(comp.device, &poolInfo, nullptr, &comp.descriptorPool) != VK_SUCCESS)
+    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create rect overlay descriptor pool" << std::endl;
         destroyRectOverlayCompute(comp);
@@ -293,11 +289,11 @@ bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
     }
 
     VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocInfo.descriptorPool = comp.descriptorPool;
+    allocInfo.descriptorPool = descriptorPool;
     allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &comp.descriptorSetLayout;
+    allocInfo.pSetLayouts = &descriptorSetLayout;
 
-    if (vkAllocateDescriptorSets(comp.device, &allocInfo, &comp.descriptorSet) != VK_SUCCESS)
+    if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to allocate rect overlay descriptor set" << std::endl;
         destroyRectOverlayCompute(comp);
@@ -307,7 +303,7 @@ bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
     VkCommandPoolCreateInfo poolCreateInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     poolCreateInfo.queueFamilyIndex = engine->graphicsQueueFamilyIndex;
     poolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    if (vkCreateCommandPool(comp.device, &poolCreateInfo, nullptr, &comp.commandPool) != VK_SUCCESS)
+    if (vkCreateCommandPool(device, &poolCreateInfo, nullptr, &commandPool) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create rect overlay command pool" << std::endl;
         destroyRectOverlayCompute(comp);
@@ -315,10 +311,10 @@ bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
     }
 
     VkCommandBufferAllocateInfo cmdAllocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cmdAllocInfo.commandPool = comp.commandPool;
+    cmdAllocInfo.commandPool = commandPool;
     cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmdAllocInfo.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(comp.device, &cmdAllocInfo, &comp.commandBuffer) != VK_SUCCESS)
+    if (vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to allocate rect overlay command buffer" << std::endl;
         destroyRectOverlayCompute(comp);
@@ -326,14 +322,11 @@ bool initializeRectOverlayCompute(Engine2D* engine, RectOverlayCompute& comp)
     }
 
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    if (vkCreateFence(comp.device, &fenceInfo, nullptr, &comp.fence) != VK_SUCCESS)
+    if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS)
     {
         std::cerr << "[Video2D] Failed to create rect overlay fence" << std::endl;
         destroyRectOverlayCompute(comp);
         return false;
     }
 
-    return true;
 }
-
-} // namespace overlay

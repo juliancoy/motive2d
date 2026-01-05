@@ -7,7 +7,8 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
-#include "video.h"
+#include "color_adjustments.h"
+#include "color_grading_pass.h"
 
 class Engine2D;
 
@@ -47,48 +48,24 @@ struct RenderOverrides
     glm::vec2 cropSize{1.0f, 1.0f};
 };
 
-struct ColorAdjustments
-{
-    float exposure = 0.0f;
-    float contrast = 1.0f;
-    float saturation = 1.0f;
-    glm::vec3 shadows{1.0f};
-    glm::vec3 midtones{1.0f};
-    glm::vec3 highlights{1.0f};
-    std::array<float, 256> curveLut{};
-    bool curveEnabled = false;
-};
-
-extern const bool kRenderDebugEnabled;
-
-extern const bool kRenderDebugEnabled;
-
 class Display2D
 {
 public:
     Display2D(Engine2D* engine, int width = 800, int height = 600, const char* title = "Motive 2D");
     ~Display2D();
 
-    void renderFrame(const VideoImageSet& videoImages,
-                     const OverlayImageInfo& overlayInfo,
-                     const OverlayImageInfo& fpsOverlayInfo,
-                     const video::VideoColorInfo& colorInfo,
-                     float scrubProgress,
-                     float scrubPlaying,
-                     const RenderOverrides* overrides = nullptr,
-                     const ColorAdjustments* adjustments = nullptr);
+    void renderFrame();
     void shutdown();
     bool shouldClose() const;
     void pollEvents() const;
-    void setOverlayPassEnabled(bool enabled);
     void setVideoPassEnabled(bool enabled);
+    void setPassthroughPassEnabled(bool enabled);
     void setScrubberPassEnabled(bool enabled);
 
     GLFWwindow* window = nullptr;
     int width = 0;
     int height = 0;
 
-private:
     Engine2D* engine = nullptr;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
@@ -101,21 +78,12 @@ private:
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    VkBuffer curveUBO = VK_NULL_HANDLE;
-    VkDeviceMemory curveUBOMemory = VK_NULL_HANDLE;
-    void* curveUBOMapped = nullptr;
-    VkDeviceSize curveUBOSize = sizeof(glm::vec4) * 64; // 256 floats packed as vec4
-    std::array<float, 256> lastCurveLut{};
-    bool lastCurveEnabled = false;
-    bool curveUploaded = false;
+    ColorGrading colorGrading;
 
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline computePipeline = VK_NULL_HANDLE;
-    VkPipeline overlayPipeline = VK_NULL_HANDLE;
     VkPipeline scrubPipeline = VK_NULL_HANDLE;
     bool videoPassEnabled = true;
-    bool overlayPassEnabled = true;
     bool scrubberPassEnabled = true;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets;
@@ -123,18 +91,12 @@ private:
     std::vector<VkSemaphore> imageAvailableSemaphores;
     std::vector<VkSemaphore> renderFinishedSemaphores;
     std::vector<VkFence> inFlightFences;
-    std::vector<VkImage> gradingImages;
-    std::vector<VkDeviceMemory> gradingImageMemories;
-    std::vector<VkImageView> gradingImageViews;
-    std::vector<VkImageLayout> gradingImageLayouts;
     size_t currentFrame = 0;
 
     void createWindow(const char* title);
     void createSurface();
     void createSwapchain();
-    void createGradingImages();
     void cleanupSwapchain();
-    void destroyGradingImages();
     void createCommandResources();
     void createComputeResources();
     void recreateSwapchain();

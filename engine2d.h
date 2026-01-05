@@ -9,10 +9,9 @@
 #include <vector>
 #include <GLFW/glfw3.h>
 #include "display2d.h"
-#include "video.h"
-#include "decode.h"
-#include "overlay.hpp"
-#include "grading.hpp"
+#include "decoder.h"
+#include "fps.h"
+#include "color_grading_ui.h"
 #include "graphicsdevice.h"
 
 
@@ -92,9 +91,8 @@ public:
 
     void refreshFpsOverlay();
 
-    VideoPlaybackState& getPlaybackState();
-    overlay::RectOverlayCompute& getRectOverlayCompute();
-    overlay::PoseOverlayCompute& getPoseOverlayCompute();
+    RectOverlayCompute& getRectOverlayCompute();
+    PoseOverlayCompute& getPoseOverlayCompute();
 
     void setDecodeDebugEnabled(bool enabled);
     bool isDecodeDebugEnabled() const;
@@ -140,8 +138,8 @@ public:
     std::optional<CropRegion> cropRegion;
     
     // Overlay resources
-    overlay::RectOverlayCompute rectOverlayCompute;
-    overlay::PoseOverlayCompute poseOverlayCompute;
+    RectOverlayCompute rectOverlayCompute;
+    PoseOverlayCompute poseOverlayCompute;
     bool overlayInitialized = false;
     
     // FPS tracking

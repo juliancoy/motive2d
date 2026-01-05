@@ -1,0 +1,67 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer BitmapBuffer {
+    vec4 pixels[];
+} bitmap;
+
+layout(set = 0, binding = 1, rgba8) uniform image2D targetImage;
+
+layout(push_constant) uniform CompositeBitmapPush {
+    vec2 targetSize;
+    vec2 bitmapSize;
+    vec2 position;
+    vec2 scale;
+    vec2 pivot;
+    float rotation;
+    float opacity;
+    float pad;
+} pushConstants;
+
+vec4 blend(vec4 src, vec4 dst, float alpha)
+{
+    vec4 premult = src * alpha;
+    float invAlpha = 1.0 - alpha;
+    return premult + dst * invAlpha;
+}
+
+void main()
+{
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= int(pushConstants.targetSize.x) || coord.y >= int(pushConstants.targetSize.y))
+    {
+        return;
+    }
+
+    vec2 frag = vec2(coord);
+    vec2 relative = frag + vec2(0.5) - pushConstants.position;
+
+    float cosTheta = cos(pushConstants.rotation);
+    float sinTheta = sin(pushConstants.rotation);
+    vec2 rotated = vec2(cosTheta * relative.x + sinTheta * relative.y,
+                        -sinTheta * relative.x + cosTheta * relative.y);
+    vec2 scaled = rotated / pushConstants.scale;
+    vec2 srcPos = pushConstants.pivot + scaled;
+
+    vec2 maxTex = pushConstants.bitmapSize - vec2(1.0);
+    if (srcPos.x < 0.0 || srcPos.y < 0.0 || srcPos.x > maxTex.x || srcPos.y > maxTex.y)
+    {
+        return;
+    }
+
+    uvec2 sampleCoord = uvec2(clamp(srcPos, vec2(0.0), maxTex));
+    uint bitmapWidth = uint(pushConstants.bitmapSize.x);
+    uint index = sampleCoord.y * bitmapWidth + sampleCoord.x;
+    vec4 srcColor = bitmap.pixels[index];
+
+    float srcAlpha = clamp(srcColor.a * pushConstants.opacity, 0.0, 1.0);
+    if (srcAlpha <= 0.0)
+    {
+        return;
+    }
+
+    vec4 dstColor = imageLoad(targetImage, coord);
+    vec4 result = blend(srcColor, dstColor, srcAlpha);
+    imageStore(targetImage, coord, result);
+}

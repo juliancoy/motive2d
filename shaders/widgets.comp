@@ -1,0 +1,135 @@
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Single read-write binding for in-place modification
+layout(set = 0, binding = 0, rgba8) uniform image2D overlayImage;
+
+// Draw command types
+const uint CMD_RECT = 0u;
+const uint CMD_CIRCLE = 1u;
+const uint CMD_LINE = 2u;
+const uint CMD_GRID = 3u;
+
+struct DrawCommand {
+    uint type;          // CMD_RECT, CMD_CIRCLE, CMD_LINE, CMD_GRID
+    vec4 color;         // RGBA color
+    vec4 params;        // x,y = position, z,w = size/radius
+    vec4 params2;       // Additional parameters
+};
+
+// Buffer of draw commands
+layout(std430, set = 0, binding = 1) buffer DrawCommands {
+    uint commandCount;
+    DrawCommand commands[];
+} drawCommands;
+
+layout(push_constant) uniform Push {
+    vec2 outputSize;
+    uint clearFirst;    // 1 = clear image before drawing
+} pushC;
+
+// Helper functions
+float sdBox(vec2 p, vec2 b) {
+    vec2 d = abs(p) - b;
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+}
+
+float sdCircle(vec2 p, float r) {
+    return length(p) - r;
+}
+
+float sdSegment(vec2 p, vec2 a, vec2 b) {
+    vec2 pa = p - a;
+    vec2 ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+void drawRect(vec2 frag, vec2 center, vec2 size, vec4 color, inout vec4 finalColor) {
+    vec2 d = abs(frag - center) - size * 0.5;
+    if (d.x <= 0.0 && d.y <= 0.0) {
+        finalColor = mix(finalColor, color, color.a);
+    }
+}
+
+void drawCircle(vec2 frag, vec2 center, float radius, vec4 color, inout vec4 finalColor) {
+    float d = length(frag - center) - radius;
+    if (d <= 0.0) {
+        finalColor = mix(finalColor, color, color.a);
+    }
+}
+
+void drawLine(vec2 frag, vec2 start, vec2 end, float thickness, vec4 color, inout vec4 finalColor) {
+    float d = sdSegment(frag, start, end) - thickness * 0.5;
+    if (d <= 0.0) {
+        finalColor = mix(finalColor, color, color.a);
+    }
+}
+
+void drawGrid(vec2 frag, vec2 gridOrigin, vec2 gridSize, vec2 cellCount, float lineThickness, vec4 color, inout vec4 finalColor) {
+    // Draw vertical grid lines
+    for (uint i = 0; i <= uint(cellCount.x); ++i) {
+        float x = gridOrigin.x + (float(i) / cellCount.x) * gridSize.x;
+        vec2 lineStart = vec2(x, gridOrigin.y);
+        vec2 lineEnd = vec2(x, gridOrigin.y + gridSize.y);
+        drawLine(frag, lineStart, lineEnd, lineThickness, color, finalColor);
+    }
+    
+    // Draw horizontal grid lines
+    for (uint j = 0; j <= uint(cellCount.y); ++j) {
+        float y = gridOrigin.y + (float(j) / cellCount.y) * gridSize.y;
+        vec2 lineStart = vec2(gridOrigin.x, y);
+        vec2 lineEnd = vec2(gridOrigin.x + gridSize.x, y);
+        drawLine(frag, lineStart, lineEnd, lineThickness, color, finalColor);
+    }
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(pushC.outputSize.x) || pixel.y >= int(pushC.outputSize.y)) {
+        return;
+    }
+
+    vec2 frag = vec2(pixel) + vec2(0.5);
+    vec4 finalColor = vec4(0.0);
+
+    // Clear if requested
+    if (pushC.clearFirst != 0u) {
+        finalColor = vec4(0.0, 0.0, 0.0, 0.0);
+    } else {
+        finalColor = imageLoad(overlayImage, pixel);
+    }
+
+    // Process draw commands
+    for (uint i = 0; i < drawCommands.commandCount; ++i) {
+        DrawCommand cmd = drawCommands.commands[i];
+        
+        if (cmd.type == CMD_RECT) {
+            vec2 center = cmd.params.xy;
+            vec2 size = cmd.params.zw;
+            drawRect(frag, center, size, cmd.color, finalColor);
+        }
+        else if (cmd.type == CMD_CIRCLE) {
+            vec2 center = cmd.params.xy;
+            float radius = cmd.params.z;
+            drawCircle(frag, center, radius, cmd.color, finalColor);
+        }
+        else if (cmd.type == CMD_LINE) {
+            vec2 start = cmd.params.xy;
+            vec2 end = cmd.params.zw;
+            float thickness = cmd.params2.x;
+            drawLine(frag, start, end, thickness, cmd.color, finalColor);
+        }
+        else if (cmd.type == CMD_GRID) {
+            vec2 gridOrigin = cmd.params.xy;
+            vec2 gridSize = cmd.params.zw;
+            vec2 cellCount = cmd.params2.xy;
+            float lineThickness = cmd.params2.z;
+            drawGrid(frag, gridOrigin, gridSize, cellCount, lineThickness, cmd.color, finalColor);
+        }
+    }
+
+    imageStore(overlayImage, pixel, finalColor);
+}

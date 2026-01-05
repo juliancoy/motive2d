@@ -1,8 +1,9 @@
 #include "display2d.h"
 #include "engine2d.h"
-#include "scrubber_pipeline.h"
-#include "grading_blit_pipeline.h"
+#include "scrubber.h"
+#include "color_grading_pass.h"
 #include "utils.h"
+#include "debug_logging.h"
 #include <cstdlib>
 #include <stdexcept>
 #include <algorithm>
@@ -15,25 +16,6 @@
 
 namespace
 {
-constexpr int kMaxFramesInFlight = 2;
-constexpr float kScrubberMargin = 20.0f;
-constexpr float kScrubberHeight = 64.0f;
-constexpr float kScrubberMinWidth = 200.0f;
-constexpr float kPlayIconSize = 28.0f;
-
-const std::array<float, ::kCurveLutSize>& identityCurveLut()
-{
-    static std::array<float, ::kCurveLutSize> lut = [] {
-        std::array<float, ::kCurveLutSize> arr{};
-        for (uint32_t i = 0; i < ::kCurveLutSize; ++i)
-        {
-            arr[i] = static_cast<float>(i) / static_cast<float>(::kCurveLutSize - 1);
-        }
-        return arr;
-    }();
-    return lut;
-}
-
 struct LayoutInfo
 {
     VkAccessFlags accessMask;
@@ -59,41 +41,7 @@ LayoutInfo layoutInfoFor(VkImageLayout layout)
     }
 }
 
-struct ComputePushConstants
-{
-    glm::vec2 outputSize;
-    glm::vec2 videoSize;
-    glm::vec2 targetOrigin;
-    glm::vec2 targetSize;
-    glm::vec2 cropOrigin;
-    glm::vec2 cropSize;
-    glm::vec2 chromaDiv;
-    uint32_t colorSpace;
-    uint32_t colorRange;
-    uint32_t overlayEnabled;
-    uint32_t fpsOverlayEnabled;
-    glm::vec2 overlayOrigin;
-    glm::vec2 overlaySize;
-    glm::vec2 fpsOverlayOrigin;
-    glm::vec2 fpsOverlaySize;
-    glm::vec4 fpsOverlayBackground;
-    float scrubProgress;
-    float scrubPlaying;
-    uint32_t scrubberEnabled;
-    uint32_t _padScrub0;
-    uint32_t _padScrub1;
-    uint32_t _padScrub2;
-    glm::vec4 grading;    // exposure (x), contrast (y), saturation (z)
-    glm::vec4 shadows;    // rgb, w unused
-    glm::vec4 midtones;   // rgb, w unused
-    glm::vec4 highlights; // rgb, w unused
-};
-static_assert(sizeof(ComputePushConstants) == 208, "Compute push constants must match shader layout");
-static_assert(offsetof(ComputePushConstants, overlayOrigin) == 72, "overlayOrigin offset mismatch with shader");
-static_assert(offsetof(ComputePushConstants, fpsOverlayOrigin) == 88, "fpsOverlayOrigin offset mismatch with shader");
-static_assert(offsetof(ComputePushConstants, fpsOverlayBackground) == 104, "fpsOverlayBackground offset mismatch with shader");
-
-VkExtent2D chooseSwapExtent(GLFWwindow* window, const VkSurfaceCapabilitiesKHR& capabilities)
+VkExtent2D chooseSwapExtentImpl(GLFWwindow* window, const VkSurfaceCapabilitiesKHR& capabilities)
 {
     if (capabilities.currentExtent.width != UINT32_MAX)
     {
@@ -116,10 +64,8 @@ VkExtent2D chooseSwapExtent(GLFWwindow* window, const VkSurfaceCapabilitiesKHR& 
 }
 } // namespace
 
-const bool kRenderDebugEnabled = (::getenv("MOTIVE2D_DEBUG_RENDER") != nullptr);
-
 Display2D::Display2D(Engine2D* engine, int width, int height, const char* title)
-    : engine(engine), width(width), height(height)
+    : engine(engine), width(width), height(height), colorGrading(this)
 {
     if (!engine)
     {
@@ -177,28 +123,13 @@ void Display2D::shutdown()
     }
     destroyScrubberPipeline(engine, scrubPipeline);
     scrubPipeline = VK_NULL_HANDLE;
-    if (overlayPipeline != VK_NULL_HANDLE)
-    {
-        vkDestroyPipeline(engine->logicalDevice, overlayPipeline, nullptr);
-        overlayPipeline = VK_NULL_HANDLE;
-    }
-    destroyGradingBlitPipeline(engine, computePipeline);
-    computePipeline = VK_NULL_HANDLE;
+    colorGrading.destroyPipeline();
+    colorGrading.destroyCurveResources();
     if (pipelineLayout != VK_NULL_HANDLE)
     {
         vkDestroyPipelineLayout(engine->logicalDevice, pipelineLayout, nullptr);
         pipelineLayout = VK_NULL_HANDLE;
     }
-    if (curveUBO != VK_NULL_HANDLE)
-    {
-        vkUnmapMemory(engine->logicalDevice, curveUBOMemory);
-        vkDestroyBuffer(engine->logicalDevice, curveUBO, nullptr);
-        vkFreeMemory(engine->logicalDevice, curveUBOMemory, nullptr);
-        curveUBO = VK_NULL_HANDLE;
-        curveUBOMemory = VK_NULL_HANDLE;
-        curveUBOMapped = nullptr;
-    }
-    curveUploaded = false;
     if (descriptorSetLayout != VK_NULL_HANDLE)
     {
         vkDestroyDescriptorSetLayout(engine->logicalDevice, descriptorSetLayout, nullptr);
@@ -227,7 +158,7 @@ void Display2D::shutdown()
     auto swapchainMs = std::chrono::duration_cast<std::chrono::milliseconds>(tSwapchain - tWait).count();
     auto gpuObjectsMs = std::chrono::duration_cast<std::chrono::milliseconds>(tGpuObjects - tSwapchain).count();
     auto windowMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tGpuObjects).count();
-    if (kRenderDebugEnabled)
+    if (renderDebugEnabled())
     {
         std::cout << "[Display2D] teardown timing: waitAll=" << waitMs
                   << " ms, swapchain=" << swapchainMs
@@ -280,7 +211,7 @@ void Display2D::createSwapchain()
     }
 
     swapchainFormat = surfaceFormat.format;
-    swapchainExtent = chooseSwapExtent(window, capabilities);
+    swapchainExtent = chooseSwapExtentImpl(window, capabilities);
 
     uint32_t imageCount = capabilities.minImageCount + 1;
     if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount)
@@ -333,7 +264,7 @@ void Display2D::createSwapchain()
 }
 
     swapchainImageLayouts.assign(swapchainImages.size(), VK_IMAGE_LAYOUT_UNDEFINED);
-    createGradingImages();
+    colorGrading.createGradingImages();
 
     imageAvailableSemaphores.resize(kMaxFramesInFlight);
     renderFinishedSemaphores.resize(kMaxFramesInFlight);
@@ -354,21 +285,6 @@ void Display2D::createSwapchain()
     }
 }
 
-void Display2D::setOverlayPassEnabled(bool enabled)
-{
-    overlayPassEnabled = enabled;
-}
-
-void Display2D::setVideoPassEnabled(bool enabled)
-{
-    videoPassEnabled = enabled;
-}
-
-void Display2D::setScrubberPassEnabled(bool enabled)
-{
-    scrubberPassEnabled = enabled;
-}
-
 void Display2D::cleanupSwapchain()
 {
     using clock = std::chrono::steady_clock;
@@ -382,7 +298,7 @@ void Display2D::cleanupSwapchain()
     swapchainImageViews.clear();
     swapchainImages.clear();
     swapchainImageLayouts.clear();
-    destroyGradingImages();
+    colorGrading.destroyGradingImages();
 
     for (auto fence : inFlightFences)
     {
@@ -416,7 +332,7 @@ void Display2D::cleanupSwapchain()
     auto semAvailMs = std::chrono::duration_cast<std::chrono::milliseconds>(tImageSems - tFences).count();
     auto semRenderMs = std::chrono::duration_cast<std::chrono::milliseconds>(tRenderSems - tImageSems).count();
     auto swapchainMs = std::chrono::duration_cast<std::chrono::milliseconds>(tSwapchain - tRenderSems).count();
-    if (kRenderDebugEnabled)
+    if (renderDebugEnabled())
     {
         std::cout << "[Display2D] cleanupSwapchain timing: views=" << viewsMs
                   << " ms, fences=" << fencesMs
@@ -426,102 +342,6 @@ void Display2D::cleanupSwapchain()
     }
 }
 
-void Display2D::createGradingImages()
-{
-    destroyGradingImages();
-
-    const size_t count = swapchainImages.size();
-    if (count == 0)
-    {
-        return;
-    }
-
-    gradingImages.resize(count);
-    gradingImageMemories.resize(count);
-    gradingImageViews.resize(count);
-    gradingImageLayouts.assign(count, VK_IMAGE_LAYOUT_UNDEFINED);
-
-    for (size_t i = 0; i < count; ++i)
-    {
-        VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.format = swapchainFormat;
-        imageInfo.extent = VkExtent3D{swapchainExtent.width, swapchainExtent.height, 1};
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-        imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-        if (vkCreateImage(engine->logicalDevice, &imageInfo, nullptr, &gradingImages[i]) != VK_SUCCESS)
-        {
-            destroyGradingImages();
-            throw std::runtime_error("Failed to create grading intermediate image");
-        }
-
-        VkMemoryRequirements memReq{};
-        vkGetImageMemoryRequirements(engine->logicalDevice, gradingImages[i], &memReq);
-
-        VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        allocInfo.allocationSize = memReq.size;
-        allocInfo.memoryTypeIndex =
-            engine->findMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-        if (vkAllocateMemory(engine->logicalDevice, &allocInfo, nullptr, &gradingImageMemories[i]) != VK_SUCCESS)
-        {
-            destroyGradingImages();
-            throw std::runtime_error("Failed to allocate grading intermediate image memory");
-        }
-
-        vkBindImageMemory(engine->logicalDevice, gradingImages[i], gradingImageMemories[i], 0);
-
-        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        viewInfo.image = gradingImages[i];
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = swapchainFormat;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-        if (vkCreateImageView(engine->logicalDevice, &viewInfo, nullptr, &gradingImageViews[i]) != VK_SUCCESS)
-        {
-            destroyGradingImages();
-            throw std::runtime_error("Failed to create grading intermediate image view");
-        }
-    }
-}
-
-void Display2D::destroyGradingImages()
-{
-    for (auto view : gradingImageViews)
-    {
-        if (view != VK_NULL_HANDLE)
-        {
-            vkDestroyImageView(engine->logicalDevice, view, nullptr);
-        }
-    }
-    for (auto image : gradingImages)
-    {
-        if (image != VK_NULL_HANDLE)
-        {
-            vkDestroyImage(engine->logicalDevice, image, nullptr);
-        }
-    }
-    for (auto mem : gradingImageMemories)
-    {
-        if (mem != VK_NULL_HANDLE)
-        {
-            vkFreeMemory(engine->logicalDevice, mem, nullptr);
-        }
-    }
-    gradingImages.clear();
-    gradingImageViews.clear();
-    gradingImageMemories.clear();
-    gradingImageLayouts.clear();
-}
 
 void Display2D::createCommandResources()
 {
@@ -547,15 +367,7 @@ void Display2D::createCommandResources()
 
 void Display2D::createComputeResources()
 {
-    if (curveUBO != VK_NULL_HANDLE)
-    {
-        vkUnmapMemory(engine->logicalDevice, curveUBOMemory);
-        vkDestroyBuffer(engine->logicalDevice, curveUBO, nullptr);
-        vkFreeMemory(engine->logicalDevice, curveUBOMemory, nullptr);
-        curveUBO = VK_NULL_HANDLE;
-        curveUBOMemory = VK_NULL_HANDLE;
-        curveUBOMapped = nullptr;
-    }
+    colorGrading.destroyCurveResources();
 
     destroyScrubberPipeline(engine, scrubPipeline);
     scrubPipeline = VK_NULL_HANDLE;
@@ -611,7 +423,7 @@ void Display2D::createComputeResources()
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pushRange.offset = 0;
-    pushRange.size = sizeof(ComputePushConstants);
+    pushRange.size = sizeof(CropPushConstants);
 
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipelineLayoutInfo.setLayoutCount = 1;
@@ -625,52 +437,12 @@ void Display2D::createComputeResources()
     }
 
     // Compute pipeline
-    computePipeline = createGradingBlitPipeline(engine, pipelineLayout);
+    colorGrading.destroyPipeline();
+    colorGrading.createPipeline(pipelineLayout);
 
-    auto overlayCode = readSPIRVFile("shaders/overlay_blit.comp.spv");
-    VkShaderModule overlayModule = engine->createShaderModule(overlayCode);
-    VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stageInfo.module = overlayModule;
-    stageInfo.pName = "main";
+    colorGrading.createCurveResources();
 
-    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    pipelineInfo.stage = stageInfo;
-    pipelineInfo.layout = pipelineLayout;
 
-    if (vkCreateComputePipelines(engine->logicalDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &overlayPipeline) != VK_SUCCESS)
-    {
-        vkDestroyShaderModule(engine->logicalDevice, overlayModule, nullptr);
-        destroyGradingBlitPipeline(engine, computePipeline);
-        computePipeline = VK_NULL_HANDLE;
-        throw std::runtime_error("Failed to create overlay compute pipeline for Display2D");
-    }
-
-    vkDestroyShaderModule(engine->logicalDevice, overlayModule, nullptr);
-
-    // Curve UBO
-    engine->createBuffer(curveUBOSize,
-                         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                         curveUBO,
-                         curveUBOMemory);
-    vkMapMemory(engine->logicalDevice, curveUBOMemory, 0, curveUBOSize, 0, &curveUBOMapped);
-    if (curveUBOMapped)
-    {
-        const auto& idLut = identityCurveLut();
-        std::array<glm::vec4, 64> packed{};
-        for (size_t i = 0; i < 64; ++i)
-        {
-            packed[i] = glm::vec4(idLut[i * 4 + 0],
-                                  idLut[i * 4 + 1],
-                                  idLut[i * 4 + 2],
-                                  idLut[i * 4 + 3]);
-        }
-        std::memcpy(curveUBOMapped, packed.data(), curveUBOSize);
-        lastCurveLut = idLut;
-        lastCurveEnabled = false;
-        curveUploaded = true;
-    }
 
     // Descriptor pool and sets (one per swapchain image)
     std::array<VkDescriptorPoolSize, 3> poolSizes{};
@@ -709,13 +481,7 @@ void Display2D::createComputeResources()
     }
     catch (...)
     {
-        if (overlayPipeline != VK_NULL_HANDLE)
-        {
-            vkDestroyPipeline(engine->logicalDevice, overlayPipeline, nullptr);
-            overlayPipeline = VK_NULL_HANDLE;
-        }
-        destroyGradingBlitPipeline(engine, computePipeline);
-        computePipeline = VK_NULL_HANDLE;
+        colorGrading.destroyPipeline();
         throw;
     }
 }
@@ -759,54 +525,19 @@ void Display2D::pollEvents() const
     glfwPollEvents();
 }
 
-void Display2D::renderFrame(const VideoImageSet& videoImages,
-                            const OverlayImageInfo& overlayInfo,
-                            const OverlayImageInfo& fpsOverlayInfo,
-                            const video::VideoColorInfo& colorInfo,
-                            float scrubProgress,
-                            float scrubPlaying,
-                            const RenderOverrides* overrides,
-                            const ColorAdjustments* adjustments)
+void Display2D::renderFrame()
 {
-    if (swapchainImages.empty() || videoImages.luma.view == VK_NULL_HANDLE || videoImages.luma.sampler == VK_NULL_HANDLE ||
-        gradingImages.size() != swapchainImages.size() || gradingImageViews.size() != swapchainImages.size())
+    if (renderDebugEnabled())
     {
-        if (kRenderDebugEnabled)
-        {
-            std::cout << "[Display2D] renderFrame: early return - invalid resources" << std::endl;
-            std::cout << "[Display2D]   swapchainImages.empty(): " << swapchainImages.empty() << std::endl;
-            std::cout << "[Display2D]   videoImages.luma.view: " << videoImages.luma.view << std::endl;
-            std::cout << "[Display2D]   videoImages.luma.sampler: " << videoImages.luma.sampler << std::endl;
-            std::cout << "[Display2D]   videoImages.width: " << videoImages.width << " height: " << videoImages.height << std::endl;
-            std::cout << "[Display2D]   gradingImages.size(): " << gradingImages.size() << " swapchainImages.size(): " << swapchainImages.size() << std::endl;
-        }
-        return;
+        std::cout << "[Display2D] renderFrame: early return - invalid resources" << std::endl;
+        std::cout << "[Display2D]   swapchainImages.empty(): " << swapchainImages.empty() << std::endl;
+        std::cout << "[Display2D]   videoImages.luma.view: " << videoImages.luma.view << std::endl;
+        std::cout << "[Display2D]   videoImages.luma.sampler: " << videoImages.luma.sampler << std::endl;
+        std::cout << "[Display2D]   videoImages.width: " << videoImages.width << " height: " << videoImages.height << std::endl;
+        std::cout << "[Display2D]   gradingImages.size(): " << colorGrading.gradingImages.size() << " swapchainImages.size(): " << swapchainImages.size() << std::endl;
     }
-
-    const bool wantCurve = adjustments && adjustments->curveEnabled;
-    const std::array<float, ::kCurveLutSize>& curveData = wantCurve ? adjustments->curveLut : identityCurveLut();
-    if (curveUBOMapped)
-    {
-        bool needsUpload = !curveUploaded ||
-                           (wantCurve != lastCurveEnabled) ||
-                           (std::memcmp(lastCurveLut.data(), curveData.data(), sizeof(float) * ::kCurveLutSize) != 0);
-        if (needsUpload)
-        {
-            std::array<glm::vec4, 64> packed{};
-            for (size_t i = 0; i < 64; ++i)
-            {
-                packed[i] = glm::vec4(curveData[i * 4 + 0],
-                                      curveData[i * 4 + 1],
-                                      curveData[i * 4 + 2],
-                                      curveData[i * 4 + 3]);
-            }
-            std::memcpy(curveUBOMapped, packed.data(), curveUBOSize);
-            lastCurveLut = curveData;
-            lastCurveEnabled = wantCurve;
-            curveUploaded = true;
-        }
-    }
-
+    return;
+    colorGrading.applyCurve();
     vkWaitForFences(engine->logicalDevice, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
     uint32_t imageIndex = 0;
@@ -830,8 +561,8 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
     vkBeginCommandBuffer(commandBuffer, &beginInfo);
 
     VkImage swapImage = swapchainImages[imageIndex];
-    VkImage gradingImage = gradingImages[imageIndex];
-    VkImageLayout currentLayout = gradingImageLayouts[imageIndex];
+    VkImage gradingImage = colorGrading.gradingImages[imageIndex];
+    VkImageLayout currentLayout = colorGrading.gradingImageLayouts[imageIndex];
     if (currentLayout != VK_IMAGE_LAYOUT_GENERAL)
     {
         LayoutInfo prevInfo = layoutInfoFor(currentLayout);
@@ -855,7 +586,7 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
                              0, nullptr,
                              0, nullptr,
                              1, &gradingBarrier);
-        gradingImageLayouts[imageIndex] = VK_IMAGE_LAYOUT_GENERAL;
+        colorGrading.gradingImageLayouts[imageIndex] = VK_IMAGE_LAYOUT_GENERAL;
     }
 
     auto ensureSwapImageGeneral = [&]() {
@@ -891,7 +622,7 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
     // Update descriptor set for this image
     VkDescriptorImageInfo storageInfo{};
     storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    storageInfo.imageView = gradingImageViews[imageIndex];
+    storageInfo.imageView = colorGrading.gradingImageViews[imageIndex];
 
     VkDescriptorImageInfo overlayImageInfo{};
     overlayImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -921,9 +652,9 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
     chromaInfo.sampler = videoImages.chroma.sampler ? videoImages.chroma.sampler : videoImages.luma.sampler;
 
     VkDescriptorBufferInfo curveBufferInfo{};
-    curveBufferInfo.buffer = curveUBO;
+    curveBufferInfo.buffer = colorGrading.curveUBO();
     curveBufferInfo.offset = 0;
-    curveBufferInfo.range = curveUBOSize;
+    curveBufferInfo.range = colorGrading.curveUBOSize();
 
     std::array<VkWriteDescriptorSet, 6> writes{};
     // 0: storage (swapchain)
@@ -1005,162 +736,46 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
                               ? overrides->targetOrigin.y
                               : (kScrubberMargin + (availableHeight - targetHeight) * 0.5f);
 
-    ComputePushConstants push{};
-    push.outputSize = glm::vec2(static_cast<float>(swapchainExtent.width), static_cast<float>(swapchainExtent.height));
-    push.videoSize = glm::vec2(static_cast<float>(videoImages.width), static_cast<float>(videoImages.height));
-    push.targetOrigin = glm::vec2(originX, originY);
-    push.targetSize = glm::vec2(targetWidth, targetHeight);
-    if (overrides && overrides->useCrop)
+    if (renderDebugEnabled())
     {
-        push.cropOrigin = overrides->cropOrigin;
-        push.cropSize = overrides->cropSize;
-    }
-    else
-    {
-        push.cropOrigin = glm::vec2(0.0f, 0.0f);
-        push.cropSize = glm::vec2(1.0f, 1.0f);
-    }
-    push.chromaDiv = glm::vec2(static_cast<float>(videoImages.chromaDivX),
-                               static_cast<float>(videoImages.chromaDivY));
-    push.colorSpace = static_cast<uint32_t>(colorInfo.colorSpace);
-    push.colorRange = static_cast<uint32_t>(colorInfo.colorRange);
-    // Clamp overlay placement to the current output extent to avoid off-screen coordinates
-    uint32_t maxOverlayW = std::max(1u, swapchainExtent.width);
-    uint32_t maxOverlayH = std::max(1u, swapchainExtent.height);
-    uint32_t clampedOverlayW = std::min(overlayInfo.extent.width, maxOverlayW);
-    uint32_t clampedOverlayH = std::min(overlayInfo.extent.height, maxOverlayH);
-    int32_t clampedX = std::clamp(overlayInfo.offset.x, 0, static_cast<int32_t>(maxOverlayW - clampedOverlayW));
-    int32_t clampedY = std::clamp(overlayInfo.offset.y, 0, static_cast<int32_t>(maxOverlayH - clampedOverlayH));
-
-    uint32_t clampedFpsW = std::min(fpsOverlayInfo.extent.width, maxOverlayW);
-    uint32_t clampedFpsH = std::min(fpsOverlayInfo.extent.height, maxOverlayH);
-    int32_t clampedFpsX = std::clamp(fpsOverlayInfo.offset.x, 0, static_cast<int32_t>(maxOverlayW - clampedFpsW));
-    int32_t clampedFpsY = std::clamp(fpsOverlayInfo.offset.y, 0, static_cast<int32_t>(maxOverlayH - clampedFpsH));
-
-    const bool overlayValid = overlayInfo.enabled &&
-                              overlayInfo.overlay.view != VK_NULL_HANDLE &&
-                              overlayInfo.overlay.sampler != VK_NULL_HANDLE &&
-                              clampedOverlayW > 0 && clampedOverlayH > 0;
-    const bool fpsOverlayValid = fpsOverlayInfo.enabled &&
-                                 fpsOverlayInfo.overlay.view != VK_NULL_HANDLE &&
-                                 fpsOverlayInfo.overlay.sampler != VK_NULL_HANDLE &&
-                                 clampedFpsW > 0 && clampedFpsH > 0;
-    push.overlayEnabled = overlayValid ? 1u : 0u;
-    push.fpsOverlayEnabled = fpsOverlayValid ? 1u : 0u;
-    push.scrubProgress = scrubProgress;
-    push.scrubPlaying = scrubPlaying;
-    push.scrubberEnabled = scrubberPassEnabled ? 1u : 0u;
-    push._padScrub0 = push._padScrub1 = push._padScrub2 = 0;
-    if (adjustments)
-    {
-        push.grading = glm::vec4(adjustments->exposure, adjustments->contrast, adjustments->saturation, 0.0f);
-        push.shadows = glm::vec4(adjustments->shadows, 0.0f);
-        push.midtones = glm::vec4(adjustments->midtones, 0.0f);
-        push.highlights = glm::vec4(adjustments->highlights, 0.0f);
-    }
-    else
-    {
-        push.grading = glm::vec4(0.0f, 1.0f, 1.0f, 0.0f);
-        push.shadows = glm::vec4(1.0f);
-        push.midtones = glm::vec4(1.0f);
-        push.highlights = glm::vec4(1.0f);
-    }
-    push.overlayOrigin = glm::vec2(static_cast<float>(clampedX), static_cast<float>(clampedY));
-    push.overlaySize = glm::vec2(static_cast<float>(clampedOverlayW), static_cast<float>(clampedOverlayH));
-    push.fpsOverlayOrigin = glm::vec2(static_cast<float>(clampedFpsX), static_cast<float>(clampedFpsY));
-    push.fpsOverlaySize = glm::vec2(static_cast<float>(clampedFpsW), static_cast<float>(clampedFpsH));
-    push.fpsOverlayBackground =
-        fpsOverlayValid ? glm::vec4(0.0f, 0.0f, 0.0f, 0.55f) : glm::vec4(0.0f);
-
-    if (kRenderDebugEnabled)
-    {
-        std::cout << "[Display2D] renderFrame image=" << imageIndex
+        LOG_DEBUG(std::cout << "[Display2D] renderFrame image=" << imageIndex
                   << " videoSize=" << videoImages.width << "x" << videoImages.height
                   << " swapchainExtent=" << swapchainExtent.width << "x" << swapchainExtent.height
                   << " reservedHeight=" << reservedHeight << " availableHeight=" << availableHeight
                   << " videoAspect=" << videoAspect << " outputAspect=" << outputAspect
-                  << " targetOrigin=(" << push.targetOrigin.x << "," << push.targetOrigin.y << ")"
-                  << " targetSize=" << push.targetSize.x << "x" << push.targetSize.y
+                  << " targetOrigin=(" << cropPushConstants.targetOrigin.x << "," << cropPushConstants.targetOrigin.y << ")"
+                  << " targetSize=" << cropPushConstants.targetSize.x << "x" << cropPushConstants.targetSize.y
                   << " overlayEnabled=" << overlayValid
                   << " fpsOverlayEnabled=" << fpsOverlayValid
-                  << " overlayPassEnabled=" << overlayPassEnabled
-                  << " overlaySize=" << push.overlaySize.x << "x" << push.overlaySize.y
-                  << " fpsSize=" << push.fpsOverlaySize.x << "x" << push.fpsOverlaySize.y
-                  << std::endl;
+                  << " overlaySize=" << cropPushConstants.overlaySize.x << "x" << cropPushConstants.overlaySize.y
+                  << " fpsSize=" << cropPushConstants.fpsOverlaySize.x << "x" << cropPushConstants.fpsOverlaySize.y
+                  << std::endl);
     }
 
-    vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &push);
+    vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CropPushConstants), &cropPushConstants);
 
     const uint32_t groupX = (swapchainExtent.width + 15) / 16;
     const uint32_t groupY = (swapchainExtent.height + 15) / 16;
     if (videoPassEnabled)
     {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_COMPUTE,
-                                pipelineLayout,
-                                0,
-                                1,
-                                &descriptorSets[imageIndex],
-                                0,
-                                nullptr);
-        if (kRenderDebugEnabled)
+        colorGrading.dispatch(commandBuffer,
+                              pipelineLayout,
+                              descriptorSets[imageIndex],
+                              cropPushConstants,
+                              groupX,
+                              groupY);
+        if (renderDebugEnabled())
         {
-            std::cout << "[Display2D] Video pass (blit) pipeline bound and ready for dispatch" << std::endl;
-        }
-
-        vkCmdDispatch(commandBuffer, groupX, groupY, 1);
-        if (kRenderDebugEnabled)
-        {
-            std::cout << "[Display2D] Video pass dispatched, request sync state overlayPassEnabled="
-                      << overlayPassEnabled << std::endl;
+            LOG_DEBUG(std::cout << "[Display2D] Video pass (blit) pipeline bound and ready for dispatch" << std::endl);
+            LOG_DEBUG(std::cout << "[Display2D] Video pass dispatched" << std::endl);
         }
     }
 
-    bool scrubPassDispatched = false;
-    if (scrubPipeline != VK_NULL_HANDLE && scrubberPassEnabled)
-    {
-        ensureSwapImageGeneral();
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, scrubPipeline);
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_COMPUTE,
-                                pipelineLayout,
-                                0,
-                                1,
-                                &descriptorSets[imageIndex],
-                                0,
-                                nullptr);
-        vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &push);
-        vkCmdDispatch(commandBuffer, groupX, groupY, 1);
-        scrubPassDispatched = true;
-        std::cout << "[Display2D] Scrubber pass dispatched" << std::endl;
-    }
-
-    const bool needsOverlayPass = overlayPassEnabled && (overlayValid || fpsOverlayValid);
-    if (needsOverlayPass && overlayPipeline != VK_NULL_HANDLE)
-    {
-        ensureSwapImageGeneral();
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, overlayPipeline);
-        vkCmdBindDescriptorSets(commandBuffer,
-                                VK_PIPELINE_BIND_POINT_COMPUTE,
-                                pipelineLayout,
-                                0,
-                                1,
-                                &descriptorSets[imageIndex],
-                                0,
-                                nullptr);
-        vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &push);
-        vkCmdDispatch(commandBuffer, groupX, groupY, 1);
-        if (kRenderDebugEnabled)
-        {
-            std::cout << "[Display2D] Overlay pass dispatched" << std::endl;
-        }
-    }
-
-    // Copy the final grading image to the swapchain for presentation
-    LayoutInfo gradingInfo = layoutInfoFor(gradingImageLayouts[imageIndex]);
+    // Copy the decoded video into the swapchain so overlay/scrub can draw on top
+    ensureSwapImageGeneral();
+    LayoutInfo gradingInfo = layoutInfoFor(colorGrading.gradingImageLayouts[imageIndex]);
     VkImageMemoryBarrier gradingToTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    gradingToTransfer.oldLayout = gradingImageLayouts[imageIndex];
+    gradingToTransfer.oldLayout = colorGrading.gradingImageLayouts[imageIndex];
     gradingToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     gradingToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     gradingToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1170,16 +785,8 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
     gradingToTransfer.subresourceRange.levelCount = 1;
     gradingToTransfer.subresourceRange.baseArrayLayer = 0;
     gradingToTransfer.subresourceRange.layerCount = 1;
-    gradingToTransfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    gradingToTransfer.srcAccessMask = gradingInfo.accessMask;
     gradingToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    vkCmdPipelineBarrier(commandBuffer,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         0,
-                         0, nullptr,
-                         0, nullptr,
-                         1, &gradingToTransfer);
-
     LayoutInfo swapInfo = layoutInfoFor(swapchainImageLayouts[imageIndex]);
     VkImageMemoryBarrier swapToTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     swapToTransfer.oldLayout = swapchainImageLayouts[imageIndex];
@@ -1195,13 +802,19 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
     swapToTransfer.srcAccessMask = swapInfo.accessMask;
     swapToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(commandBuffer,
+                         gradingInfo.stage,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &gradingToTransfer);
+    vkCmdPipelineBarrier(commandBuffer,
                          swapInfo.stage,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
                          0,
                          0, nullptr,
                          0, nullptr,
                          1, &swapToTransfer);
-
     VkImageCopy copyRegion{};
     copyRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     copyRegion.srcSubresource.baseArrayLayer = 0;
@@ -1218,9 +831,65 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                    1,
                    &copyRegion);
+    VkImageMemoryBarrier swapBack{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    swapBack.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    swapBack.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    swapBack.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapBack.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swapBack.image = swapImage;
+    swapBack.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    swapBack.subresourceRange.baseMipLevel = 0;
+    swapBack.subresourceRange.levelCount = 1;
+    swapBack.subresourceRange.baseArrayLayer = 0;
+    swapBack.subresourceRange.layerCount = 1;
+    swapBack.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    swapBack.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &swapBack);
+    swapchainImageLayouts[imageIndex] = VK_IMAGE_LAYOUT_GENERAL;
+    colorGrading.gradingImageLayouts[imageIndex] = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorImageInfo swapStorageInfo{};
+    swapStorageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    swapStorageInfo.imageView = swapchainImageViews[imageIndex];
+    swapStorageInfo.sampler = VK_NULL_HANDLE;
+    VkWriteDescriptorSet swapStorageWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    swapStorageWrite.dstSet = descriptorSets[imageIndex];
+    swapStorageWrite.dstBinding = 0;
+    swapStorageWrite.dstArrayElement = 0;
+    swapStorageWrite.descriptorCount = 1;
+    swapStorageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    swapStorageWrite.pImageInfo = &swapStorageInfo;
+    vkUpdateDescriptorSets(engine->logicalDevice, 1, &swapStorageWrite, 0, nullptr);
 
+    bool scrubPassDispatched = false;
+    if (scrubPipeline != VK_NULL_HANDLE && scrubberPassEnabled)
+    {
+        ensureSwapImageGeneral();
+        ScrubberPushConstants scrubPush{};
+        scrubPush.resolution = glm::vec2(static_cast<float>(swapchainExtent.width),
+                                          static_cast<float>(swapchainExtent.height));
+        scrubPush.progress = scrubProgress;
+        scrubPush.isPlaying = scrubPlaying;
+        dispatchScrubberPass(commandBuffer,
+                             scrubPipeline,
+                             pipelineLayout,
+                             descriptorSets[imageIndex],
+                             scrubPush,
+                             groupX,
+                             groupY);
+        scrubPassDispatched = true;
+        LOG_DEBUG(std::cout << "[Display2D] Scrubber pass dispatched" << std::endl);
+    }
+
+
+    LayoutInfo swapToPresentInfo = layoutInfoFor(swapchainImageLayouts[imageIndex]);
     VkImageMemoryBarrier swapToPresent{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    swapToPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    swapToPresent.oldLayout = swapchainImageLayouts[imageIndex];
     swapToPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     swapToPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     swapToPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1230,11 +899,11 @@ void Display2D::renderFrame(const VideoImageSet& videoImages,
     swapToPresent.subresourceRange.levelCount = 1;
     swapToPresent.subresourceRange.baseArrayLayer = 0;
     swapToPresent.subresourceRange.layerCount = 1;
-    swapToPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    swapToPresent.srcAccessMask = swapToPresentInfo.accessMask;
     swapToPresent.dstAccessMask = 0;
 
     vkCmdPipelineBarrier(commandBuffer,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         swapToPresentInfo.stage,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                          0,
                          0, nullptr,

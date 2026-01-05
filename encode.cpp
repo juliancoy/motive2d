@@ -11,7 +11,7 @@
 #include <vulkan/vulkan.h>
 
 #include "engine2d.h"
-#include "grading.hpp"
+#include "color_grading_ui.h"
 #include "utils.h"
 #include "annexb_demuxer.h"
 

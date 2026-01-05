@@ -464,7 +464,7 @@ def setup_freetype():
     def brotli_available():
         if pkg_config_exists("libbrotlidec"):
             return True
-        return Path("/usr/include/brotli/decode.h").exists()
+        return Path("/usr/include/brotli/decoder.h").exists()
 
     ensure_pkg_with_apt(
         "libbrotlidec",

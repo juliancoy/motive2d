@@ -37,7 +37,7 @@ Based on analysis of the codebase, here is the comprehensive pipeline architectu
 │                         RENDERING PIPELINES (Parallel)                      │
 │                                                                             │
 │  ┌────────────────────────────────────────────────────────────────────┐    │
-│  │ VIDEO BLIT PIPELINE (grading_blit_pipeline)                        │    │
+│  │ VIDEO BLIT PIPELINE (grading_pass)                        │    │
 │  │                                                                    │    │
 │  │ Source: VideoImageSet (YUV textures)                               │    │
 │  │ Destination: Grading Images (RGBA intermediate)                    │    │
@@ -151,7 +151,7 @@ All overlays operate on the Grading Images (RGBA intermediate):
 - **Function**: Renders anti-aliased text
 
 #### 3.4 FPS Overlay
-- **Source**: CPU-generated bitmap from `glyph::buildFrameRateOverlay()`
+- **Source**: CPU-generated bitmap from `buildFrameRateOverlay()`
 - **Upload**: `uploadImageData()` to Vulkan texture
 - **Function**: Displays frame rate counter
 

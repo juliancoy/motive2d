@@ -1,7 +1,9 @@
+#include "debug_logging.h"
 #include "engine2d.h"
 #include "pose_overlay.hpp"
-#include "subtitle_overlay.hpp"
+#include "text.h"
 #include "video.h"
+#include "subtitle.h"
 
 #include <glm/glm.hpp>
 #include <glm/vec2.hpp>
@@ -43,6 +45,7 @@ struct CliOptions
     bool poseEnabled = false;
     bool overlaysEnabled = true;
     bool scrubberEnabled = true;
+    bool debugLogging = false;
     std::filesystem::path poseModelBase = "yolov8n_pose";
     bool debugDecode = false;
     bool inputOnly = false;
@@ -140,6 +143,11 @@ CliOptions parseCliOptions(int argc, char** argv)
         if (arg == "--no-subtitle-background")
         {
             opts.subtitleBackground = false;
+            continue;
+        }
+        if (arg == "--debug")
+        {
+            opts.debugLogging = true;
             continue;
         }
         if (arg.rfind("--windows", 0) == 0)
@@ -796,7 +804,7 @@ bool savePpmFromYuv(const std::filesystem::path& path,
 void buildDetectionEntries(const std::vector<PoseObject>& objects,
                            int frameWidth,
                            int frameHeight,
-                           std::vector<overlay::DetectionEntry>& output)
+                           std::vector<DetectionEntry>& output)
 {
     output.clear();
     if (frameWidth <= 0 || frameHeight <= 0)
@@ -828,7 +836,7 @@ void buildDetectionEntries(const std::vector<PoseObject>& objects,
         bbox.z = std::clamp(obj.width * widthInv, 0.0f, 1.0f - bbox.x);
         bbox.w = std::clamp(obj.height * heightInv, 0.0f, 1.0f - bbox.y);
 
-        overlay::DetectionEntry boxEntry{};
+        DetectionEntry boxEntry{};
         boxEntry.bbox = bbox;
         boxEntry.color = palette[idx % palette.size()];
         boxEntry.confidence = obj.score;
@@ -846,7 +854,7 @@ void buildDetectionEntries(const std::vector<PoseObject>& objects,
             float kpLeft = std::clamp(kpCenterX - kpWidth * 0.5f, 0.0f, 1.0f - kpWidth);
             float kpTop = std::clamp(kpCenterY - kpHeight * 0.5f, 0.0f, 1.0f - kpHeight);
 
-            overlay::DetectionEntry keyEntry{};
+            DetectionEntry keyEntry{};
             keyEntry.bbox = glm::vec4(kpLeft, kpTop, kpWidth, kpHeight);
             keyEntry.color = keyColor;
             keyEntry.confidence = kp.prob;
@@ -860,6 +868,11 @@ void buildDetectionEntries(const std::vector<PoseObject>& objects,
 int main(int argc, char** argv)
 {
     CliOptions cli = parseCliOptions(argc, argv);
+    setRenderDebugEnabled(cli.debugLogging);
+    if (cli.debugLogging)
+    {
+        setDebugLoggingEnabled(true);
+    }
     PoseOverlay poseOverlay(cli.videoPath);
     SubtitleOverlay subtitleOverlay;
     SubtitleOverlayResources subtitleOverlayResources;
@@ -891,7 +904,7 @@ int main(int argc, char** argv)
     }
     std::vector<PoseObject> poseObjects;
     std::vector<uint8_t> poseBgrBuffer;
-    std::vector<overlay::DetectionEntry> detectionEntries;
+    std::vector<DetectionEntry> detectionEntries;
     detectionEntries.reserve(64);
     poseObjects.reserve(8);
     double lastDetectedPosePts = -1.0;
@@ -923,11 +936,11 @@ int main(int argc, char** argv)
             return 1;
         }
         glfwSetScrollCallback(inputWindow->window, onScroll);
-        inputWindow->setOverlayPassEnabled(cli.overlaysEnabled);
         inputWindow->setScrubberPassEnabled(cli.scrubberEnabled);
         if (cli.skipBlit)
         {
             inputWindow->setVideoPassEnabled(false);
+            inputWindow->setPassthroughPassEnabled(true);
         }
     }
     if (cli.showRegion)
@@ -938,11 +951,11 @@ int main(int argc, char** argv)
             std::cerr << "[motive2d] Failed to create region window.\n";
             return 1;
         }
-        regionWindow->setOverlayPassEnabled(cli.overlaysEnabled);
         regionWindow->setScrubberPassEnabled(cli.scrubberEnabled);
         if (cli.skipBlit)
         {
             regionWindow->setVideoPassEnabled(false);
+            regionWindow->setPassthroughPassEnabled(true);
         }
     }
     if (cli.showGrading)
@@ -953,11 +966,11 @@ int main(int argc, char** argv)
             std::cerr << "[motive2d] Failed to create grading window.\n";
             return 1;
         }
-        gradingWindow->setOverlayPassEnabled(cli.overlaysEnabled);
         gradingWindow->setScrubberPassEnabled(cli.scrubberEnabled);
         if (cli.skipBlit)
         {
             gradingWindow->setVideoPassEnabled(false);
+            gradingWindow->setPassthroughPassEnabled(true);
         }
     }
 
@@ -971,18 +984,18 @@ int main(int argc, char** argv)
     auto& rectOverlayCompute = engine.getRectOverlayCompute();
     auto& poseOverlayCompute = engine.getPoseOverlayCompute();
 
-    overlay::ImageResource gradingOverlayImage;
+    ImageResource gradingOverlayImage;
     OverlayImageInfo gradingOverlayInfo{};
-    overlay::ImageResource blackLuma;
-    overlay::ImageResource blackChroma;
+    ImageResource blackLuma;
+    ImageResource blackChroma;
     VkSampler blackSampler = VK_NULL_HANDLE;
     VideoImageSet blackVideo{};
 
     {
         uint8_t luma = 0;
         uint8_t chroma[2] = {128, 128};
-        overlay::uploadImageData(&engine, blackLuma, &luma, sizeof(luma), 1, 1, VK_FORMAT_R8_UNORM);
-        overlay::uploadImageData(&engine, blackChroma, chroma, sizeof(chroma), 1, 1, VK_FORMAT_R8G8_UNORM);
+        uploadImageData(&engine, blackLuma, &luma, sizeof(luma), 1, 1, VK_FORMAT_R8_UNORM);
+        uploadImageData(&engine, blackChroma, chroma, sizeof(chroma), 1, 1, VK_FORMAT_R8G8_UNORM);
         try
         {
             blackSampler = createLinearClampSampler(&engine);
@@ -1032,7 +1045,7 @@ int main(int argc, char** argv)
     bool gradingMouseHeld = false;
     bool gradingRightHeld = false;
     grading::SliderLayout gradingLayout{};
-    bool gradingPreviewEnabled = false;
+    bool gradingPreviewEnabled = true;  // Enable grading preview by default
     bool detectionEnabled = false;
 
     auto runGradingClick = [&](bool rightClick) {
@@ -1360,7 +1373,7 @@ int main(int argc, char** argv)
         const uint32_t currentFrameIndex = getFrameIndex(playbackSeconds, playbackState.decoder.fps);
         const auto& savedOverlayEntries = poseOverlay.entriesForFrame(currentFrameIndex);
         const bool hasSavedOverlay = !savedOverlayEntries.empty();
-        const overlay::DetectionEntry* savedOverlayData = hasSavedOverlay ? savedOverlayEntries.data() : nullptr;
+        const DetectionEntry* savedOverlayData = hasSavedOverlay ? savedOverlayEntries.data() : nullptr;
 
         glm::vec2 overlayRectCenter = rectCenter;
         glm::vec2 overlayRectSize(rectWidth, rectHeight);
@@ -1370,7 +1383,7 @@ int main(int argc, char** argv)
 
 
         uint32_t overlayCount = 0;
-        const overlay::DetectionEntry* overlaySource = nullptr;
+        const DetectionEntry* overlaySource = nullptr;
         if (!detectionEntries.empty())
         {
             overlaySource = detectionEntries.data();
@@ -1384,7 +1397,7 @@ int main(int argc, char** argv)
 
         const float poseOverlayEnabled = overlayCount > 0 ? 1.0f : 0.0f;
         // Run pose overlay directly to the main overlay image
-        overlay::runPoseOverlayCompute(&engine,
+        runPoseOverlayCompute(&engine,
                                        poseOverlayCompute,
                                        playbackState.overlay.image,
                                        fbWidth,
@@ -1398,7 +1411,7 @@ int main(int argc, char** argv)
                                        overlayCount);
         const float rectDetectionFlag = detectionEnabled ? 1.0f : 0.0f;
         // Run rectangle overlay reading from and writing to the same image
-        overlay::runRectOverlayCompute(&engine,
+        runRectOverlayCompute(&engine,
                                        rectOverlayCompute,
                                        playbackState.overlay.image,
                                        playbackState.overlay.image,
@@ -1539,9 +1552,9 @@ int main(int argc, char** argv)
                                                     playbackState.overlay.sampler,
                                                     2,
                                                     cli.subtitleBackground);
-            if (subtitleRendered && kRenderDebugEnabled)
+            if (subtitleRendered)
             {
-                std::cout << "[motive2d] Subtitle overlay blended onto rectangle image" << std::endl;
+                LOG_DEBUG(std::cout << "[motive2d] Subtitle overlay blended onto rectangle image" << std::endl);
             }
         }
 
@@ -1555,14 +1568,14 @@ int main(int argc, char** argv)
         const ColorAdjustments* adjustmentsPtr = gradingPreviewEnabled ? &adjustments : nullptr;
         if (gradingPreviewEnabled)
         {
-            std::cout << "[motive2d] Applying grading: exposure=" << adjustments.exposure
+            LOG_DEBUG(std::cout << "[motive2d] Applying grading: exposure=" << adjustments.exposure
                       << " contrast=" << adjustments.contrast
                       << " saturation=" << adjustments.saturation
-                      << " preview=" << gradingPreviewEnabled << std::endl;
+                      << " preview=" << gradingPreviewEnabled << std::endl);
         }
         else
         {
-            std::cout << "[motive2d] Grading preview OFF - using neutral values" << std::endl;
+            LOG_DEBUG(std::cout << "[motive2d] Grading preview OFF - using neutral values" << std::endl);
         }
         const OverlayImageInfo& fpsOverlayInfoToUse = playbackState.fpsOverlay.info;
         if (inputWindow)
@@ -1613,10 +1626,10 @@ int main(int argc, char** argv)
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
 
-    overlay::destroyImageResource(&engine, gradingOverlayImage);
+    destroyImageResource(&engine, gradingOverlayImage);
     destroySubtitleOverlayResources(&engine, subtitleOverlayResources);
-    overlay::destroyImageResource(&engine, blackLuma);
-    overlay::destroyImageResource(&engine, blackChroma);
+    destroyImageResource(&engine, blackLuma);
+    destroyImageResource(&engine, blackChroma);
     if (blackSampler != VK_NULL_HANDLE && blackSampler != playbackState.overlay.sampler)
     {
         vkDestroySampler(engine.logicalDevice, blackSampler, nullptr);

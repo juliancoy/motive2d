@@ -1,26 +1,14 @@
 #version 450
 
-layout(local_size_x = 16, local_size_y = 16) in;
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(std430, binding = 0) buffer ScrubberOutput {
-    uvec4 pixels[];
-};
+layout(set = 0, binding = 0, rgba8) uniform writeonly image2D outImage;
 
 layout(push_constant) uniform ScrubberPush {
     vec2 resolution;
     float progress;
     float isPlaying;
 } pushConstants;
-
-uvec4 packColor(vec3 color, float alpha)
-{
-    vec3 clamped = clamp(color, 0.0, 1.0);
-    uint r = uint(clamped.r * 255.0 + 0.5);
-    uint g = uint(clamped.g * 255.0 + 0.5);
-    uint b = uint(clamped.b * 255.0 + 0.5);
-    uint a = uint(clamp(alpha, 0.0, 1.0) * 255.0 + 0.5);
-    return uvec4(r, g, b, a);
-}
 
 bool pointInTriangle(vec2 point, vec2 a, vec2 b, vec2 c)
 {
@@ -105,6 +93,5 @@ void main()
         }
     }
 
-    int index = coord.y * int(width) + coord.x;
-    pixels[index] = packColor(color, 1.0);
+    imageStore(outImage, coord, vec4(color, 1.0));
 }

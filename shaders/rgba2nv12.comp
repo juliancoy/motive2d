@@ -1,0 +1,122 @@
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba8) uniform readonly image2D rgbaInput;
+layout(set = 0, binding = 1, r8) uniform writeonly image2D yPlane;
+layout(set = 0, binding = 2, rg8) uniform writeonly image2D uvPlane;
+layout(set = 0, binding = 3, r8) uniform writeonly image2D yAlpha;
+layout(set = 0, binding = 4, r8) uniform writeonly image2D uvAlpha;
+
+layout(push_constant) uniform PushConstants {
+    ivec2 rgbaSize;
+    ivec2 uvSize;
+    int colorSpace;
+    int colorRange;
+} pushC;
+
+struct YuvCoefficients {
+    vec3 y;
+    vec3 u;
+    vec3 v;
+};
+
+YuvCoefficients getCoefficients(int space)
+{
+    if (space == 0)
+    {
+        // BT.601
+        return YuvCoefficients(
+            vec3(0.299, 0.587, 0.114),
+            vec3(-0.168736, -0.331264, 0.5),
+            vec3(0.5, -0.418688, -0.081312));
+    }
+    else if (space == 2)
+    {
+        // BT.2020
+        return YuvCoefficients(
+            vec3(0.2627, 0.6780, 0.0593),
+            vec3(-0.13963, -0.36037, 0.5),
+            vec3(0.5, -0.459786, -0.040214));
+    }
+    // BT.709
+    return YuvCoefficients(
+        vec3(0.2126, 0.7152, 0.0722),
+        vec3(-0.114572, -0.385428, 0.5),
+        vec3(0.5, -0.454153, -0.045847));
+}
+
+float convertLuma(float value, int range)
+{
+    if (range == 1)
+    {
+        return clamp(value, 0.0, 1.0);
+    }
+    float scaled = value * 219.0 + 16.0;
+    return clamp(scaled / 255.0, 0.0, 1.0);
+}
+
+float convertChroma(float value, int range)
+{
+    if (range == 1)
+    {
+        return clamp(value + 0.5, 0.0, 1.0);
+    }
+    float scaled = value * 224.0 + 128.0;
+    return clamp(scaled / 255.0, 0.0, 1.0);
+}
+
+void main()
+{
+    ivec2 uvCoord = ivec2(gl_GlobalInvocationID.xy);
+    if (uvCoord.x >= pushC.uvSize.x || uvCoord.y >= pushC.uvSize.y)
+    {
+        return;
+    }
+
+    if (pushC.uvSize.x == 0 || pushC.uvSize.y == 0)
+    {
+        return;
+    }
+
+    YuvCoefficients coeffs = getCoefficients(pushC.colorSpace);
+    vec2 uvAccum = vec2(0.0);
+    float alphaSum = 0.0;
+
+    for (int dy = 0; dy < 2; ++dy)
+    {
+        for (int dx = 0; dx < 2; ++dx)
+        {
+            ivec2 pixel = uvCoord * 2 + ivec2(dx, dy);
+            if (pixel.x >= pushC.rgbaSize.x || pixel.y >= pushC.rgbaSize.y)
+            {
+                continue;
+            }
+
+            vec4 color = imageLoad(rgbaInput, pixel);
+            float alpha = color.a;
+            vec3 rgb = color.rgb;
+
+            float yValue = dot(coeffs.y, rgb);
+            float uValue = dot(coeffs.u, rgb);
+            float vValue = dot(coeffs.v, rgb);
+
+            float yNorm = convertLuma(yValue, pushC.colorRange);
+            float uNorm = convertChroma(uValue, pushC.colorRange);
+            float vNorm = convertChroma(vValue, pushC.colorRange);
+
+            imageStore(yPlane, pixel, vec4(yNorm, 0.0, 0.0, 1.0));
+            imageStore(yAlpha, pixel, vec4(alpha, 0.0, 0.0, 1.0));
+
+            uvAccum += alpha * vec2(uNorm, vNorm);
+            alphaSum += alpha;
+        }
+    }
+
+    float blockAlpha = clamp(alphaSum, 0.0, 1.0);
+    vec2 uvValue = (blockAlpha > 0.0) ? uvAccum / alphaSum : vec2(0.5, 0.5);
+
+    imageStore(uvPlane, uvCoord, vec4(uvValue, 0.0, 1.0));
+    imageStore(uvAlpha, uvCoord, vec4(blockAlpha, 0.0, 0.0, 1.0));
+}
