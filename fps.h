@@ -18,9 +18,8 @@ public:
     float lastFpsValue = -1.0f;
     uint32_t lastRefWidth = 0;
     uint32_t lastRefHeight = 0;
-    OverlayImageInfo info;
-    ImageResource image;
     VkSampler sampler = VK_NULL_HANDLE;
+    Engine2D* engine = nullptr;
     FpsOverlay(Engine2D* engine);
     ~FpsOverlay();
     void updateFpsOverlay(
@@ -29,4 +28,4 @@ public:
         float fpsValue,
         uint32_t fbWidth,
         uint32_t fbHeight);
-}
+};

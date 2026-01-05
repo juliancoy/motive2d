@@ -185,7 +185,7 @@ int main(int argc, char **argv){
         opts.skipBlit = false;
     }
 
-    Motive2D app(opts);
-    app.run(argc, argv);
-    ~app;
+    Motive2D* app = new Motive2D(opts);
+    app->run(argc, argv);
+    delete app;
 }

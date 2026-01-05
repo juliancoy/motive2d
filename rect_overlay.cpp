@@ -211,6 +211,14 @@ RectOverlay::RectOverlay(Engine2D* engine)
     binding.descriptorCount = 1;
     binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+
+    // 1: overlay (rectangle)
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    
     VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     layoutInfo.bindingCount = 1;
     layoutInfo.pBindings = &binding;

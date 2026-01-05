@@ -3,9 +3,12 @@
 #include <cstdint>
 #include <vulkan/vulkan.h>
 
+class Engine2D;
+
 // Represents an image owned by the rendering engine.
 class ImageResource
 {
+public:
     ImageResource(Engine2D *engine,
                   ImageResource &res,
                   uint32_t width,
@@ -21,4 +24,5 @@ class ImageResource
     uint32_t width = 0;
     uint32_t height = 0;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    Engine2D *engine = nullptr;
 };

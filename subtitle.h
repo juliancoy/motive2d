@@ -11,6 +11,7 @@
 #include "display2d.h"
 #include "engine2d.h"
 #include "fps.h"
+#include "text.h"
 
 class Engine2D;
 
@@ -32,7 +33,7 @@ fonts::FontBitmap prepareLineBitmap(const std::string &text, uint32_t fontSize)
     return fonts::renderText(text, fontSize);
 }
 
-struct std::stringDescriptor
+struct stringDescriptor
 {
     glm::ivec2 origin{0, 0};
     glm::ivec2 size{0, 0};
@@ -75,9 +76,9 @@ struct SubtitleSegment
 class Subtitle
 {
 public:
-    Subtitle();
+    Subtitle(const std::filesystem::path &path, Engine2D* engine);
     ~Subtitle();
-    bool Run(
+    bool run(
                 const std::stringDescriptor* lineDescriptors,
                 uint32_t lineCount,
                 VkSampler glyphSampler,
@@ -105,7 +106,7 @@ public:
 
     bool updateSubtitleOverlay(Engine2D *engine,
                                SubtitleOverlayResources &resources,
-                               const SubtitleOverlay &overlay,
+                               const Subtitle &overlay,
                                double currentTime,
                                uint32_t fbWidth,
                                uint32_t fbHeight,

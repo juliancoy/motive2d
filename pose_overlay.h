@@ -11,15 +11,13 @@
 #include <vector>
 
 #include <vulkan/vulkan.h>
+#include <nlohmann/json.hpp>
 
 #include "image_resource.h"
 #include "utils.h"
 
 struct DetectionEntry;
 class Engine2D;
-namespace nlohmann {
-    class json;
-}
 
 struct PoseOverlayPush
 {

@@ -65,12 +65,50 @@ VkExtent2D chooseSwapExtentImpl(GLFWwindow* window, const VkSurfaceCapabilitiesK
 } // namespace
 
 Display2D::Display2D(Engine2D* engine, int width, int height, const char* title)
-    : engine(engine), width(width), height(height), colorGrading(this)
+    : engine(engine), width(width), height(height)
 {
     if (!engine)
     {
         throw std::runtime_error("Display2D requires a valid engine");
     }
+
+
+    // Descriptor pool and sets (one per swapchain image)
+    std::array<VkDescriptorPoolSize, 3> poolSizes{};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    poolSizes[0].descriptorCount = static_cast<uint32_t>(swapchainImages.size());
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    poolSizes[1].descriptorCount = static_cast<uint32_t>(swapchainImages.size()) * 4;
+    poolSizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSizes[2].descriptorCount = static_cast<uint32_t>(swapchainImages.size());
+
+    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
+    poolInfo.maxSets = static_cast<uint32_t>(swapchainImages.size());
+
+    if (vkCreateDescriptorPool(engine->logicalDevice, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create descriptor pool for Display2D");
+    }
+
+    std::vector<VkDescriptorSetLayout> layouts(swapchainImages.size(), descriptorSetLayout);
+    VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocInfo.descriptorPool = descriptorPool;
+    allocInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
+    allocInfo.pSetLayouts = layouts.data();
+
+    descriptorSets.resize(layouts.size());
+
+    // Descriptor set layout
+    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+    // 0: swapchain storage image
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+
     graphicsQueue = engine->graphicsQueue;
     createWindow(title);
     createSurface();
@@ -251,7 +289,6 @@ void Display2D::createSwapchain()
 }
 
     swapchainImageLayouts.assign(swapchainImages.size(), VK_IMAGE_LAYOUT_UNDEFINED);
-    colorGrading.createGradingImages();
 
     imageAvailableSemaphores.resize(kMaxFramesInFlight);
     renderFinishedSemaphores.resize(kMaxFramesInFlight);

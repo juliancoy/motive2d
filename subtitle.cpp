@@ -75,16 +75,8 @@ std::vector<std::string> buildLines(const std::vector<SubtitleSegment>& segments
 }
 
 
-Subtitle::Subtitle(Engine2D* engine, )
+Subtitle::Subtitle(const std::filesystem::path &path, Engine2D* engine)
 {
-    if (!engine)
-    {
-        return false;
-    }
-    if (pipeline != VK_NULL_HANDLE)
-    {
-        return true;
-    }
 
     device = engine->logicalDevice;
     queue = engine->graphicsQueue;
@@ -113,7 +105,6 @@ Subtitle::Subtitle(Engine2D* engine, )
     if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
     {
         vkDestroyShaderModule(device, shaderModule, nullptr);
-        return false;
     }
 
     VkPushConstantRange pushRange{};
@@ -130,7 +121,6 @@ Subtitle::Subtitle(Engine2D* engine, )
     {
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
         vkDestroyShaderModule(device, shaderModule, nullptr);
-        return false;
     }
 
     VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -146,7 +136,6 @@ Subtitle::Subtitle(Engine2D* engine, )
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
         vkDestroyShaderModule(device, shaderModule, nullptr);
-        return false;
     }
     vkDestroyShaderModule(device, shaderModule, nullptr);
 
@@ -165,7 +154,6 @@ Subtitle::Subtitle(Engine2D* engine, )
         vkDestroyPipeline(device, pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-        return false;
     }
 
     VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -178,7 +166,6 @@ Subtitle::Subtitle(Engine2D* engine, )
         vkDestroyPipeline(device, pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-        return false;
     }
 
     VkCommandPoolCreateInfo poolCreateInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -190,7 +177,6 @@ Subtitle::Subtitle(Engine2D* engine, )
         vkDestroyPipeline(device, pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-        return false;
     }
 
     VkCommandBufferAllocateInfo cmdAllocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -204,7 +190,6 @@ Subtitle::Subtitle(Engine2D* engine, )
         vkDestroyPipeline(device, pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-        return false;
     }
 
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -216,14 +201,11 @@ Subtitle::Subtitle(Engine2D* engine, )
         vkDestroyPipeline(device, pipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-        return false;
     }
 
-    return true;
 }
 
-
-bool Subtitle::Run(
+bool Subtitle::run(
                 const std::stringDescriptor* lineDescriptors,
                 uint32_t lineCount,
                 VkSampler glyphSampler,
@@ -364,106 +346,7 @@ bool Subtitle::Run(
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
     target.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    return true;
-}
-
-
-bool Subtitle::load(const std::filesystem::path& path)
-{
-    if (path.empty() || !std::filesystem::exists(path))
-    {
-        return false;
-    }
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-    {
-        return false;
-    }
-    std::string contents;
-    contents.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    if (contents.empty())
-    {
-        return false;
-    }
-    const auto segments = parseJSON(contents);
-
-    lines_ = buildLines(segments);
-    lastIndex_ = 0;
-    return !lines_.empty();
-}
-
-std::vector<const std::string*> Subtitle::activeLines(double currentTime, size_t maxLines) const
-{
-    std::vector<const Line*> result;
-    if (lines_.empty() || maxLines == 0)
-    {
-        lastIndex_ = 0;
-        return result;
-    }
-
-    const double lookbehind = 0.3;
-    const double lookahead = 0.5;
-    size_t index = lastIndex_;
-    if (index >= lines_.size())
-    {
-        index = lines_.size() ? lines_.size() - 1 : 0;
-    }
-    while (index > 0 && lines_[index].start > currentTime)
-    {
-        --index;
-    }
-    while (index < lines_.size() && lines_[index].end + lookbehind < currentTime)
-    {
-        ++index;
-    }
-
-    lastIndex_ = index;
-    for (size_t i = index; i < lines_.size(); ++i)
-    {
-        const Line& line = lines_[i];
-        if (line.start - lookahead > currentTime)
-        {
-            if (result.empty())
-            {
-                result.push_back(&line);
-            }
-            break;
-        }
-        if (line.end + lookbehind >= currentTime)
-        {
-            result.push_back(&line);
-            if (result.size() >= maxLines)
-            {
-                break;
-            }
-        }
-    }
-
-    if (result.empty() && index < lines_.size())
-    {
-        result.push_back(&lines_[index]);
-    }
-    if (result.size() > maxLines)
-    {
-        result.resize(maxLines);
-    }
-    return result;
-}
-
-// Subtitle overlay resources
-
-bool Subtitle::updateOverlay(
-                           uint32_t fbWidth,
-                           uint32_t fbHeight,
-                           glm::vec2 overlayCenter,
-                           glm::vec2 overlaySize,
-                           ImageResource& overlayTarget,
-                           VkSampler overlaySampler,
-                           VkSampler fallbackSampler,
-                           size_t maxLines,
-                           bool enableBackground)
-{
-    resources.active = false;
+     resources.active = false;
     if (!engine || fbWidth == 0 || fbHeight == 0 || overlaySize.x <= 0.0f || overlaySize.y <= 0.0f ||
         overlayTarget.view == VK_NULL_HANDLE || overlayTarget.width == 0 || overlayTarget.height == 0 ||
         !overlay.hasData())
@@ -660,9 +543,95 @@ bool Subtitle::updateOverlay(
     LOG_DEBUG(std::cout << "[Subtitle] Compute shader succeeded" << std::endl);
     resources.active = preparedLines > 0;
     return resources.active;
+    return true;
 }
 
-Subtitle::~Subtitle::()
+
+bool Subtitle::load(const std::filesystem::path& path)
+{
+    if (path.empty() || !std::filesystem::exists(path))
+    {
+        return false;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+    {
+        return false;
+    }
+    std::string contents;
+    contents.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    if (contents.empty())
+    {
+        return false;
+    }
+    const auto segments = parseJSON(contents);
+
+    lines_ = buildLines(segments);
+    lastIndex_ = 0;
+    return !lines_.empty();
+}
+
+std::vector<const std::string*> Subtitle::activeLines(double currentTime, size_t maxLines) const
+{
+    std::vector<const Line*> result;
+    if (lines_.empty() || maxLines == 0)
+    {
+        lastIndex_ = 0;
+        return result;
+    }
+
+    const double lookbehind = 0.3;
+    const double lookahead = 0.5;
+    size_t index = lastIndex_;
+    if (index >= lines_.size())
+    {
+        index = lines_.size() ? lines_.size() - 1 : 0;
+    }
+    while (index > 0 && lines_[index].start > currentTime)
+    {
+        --index;
+    }
+    while (index < lines_.size() && lines_[index].end + lookbehind < currentTime)
+    {
+        ++index;
+    }
+
+    lastIndex_ = index;
+    for (size_t i = index; i < lines_.size(); ++i)
+    {
+        const Line& line = lines_[i];
+        if (line.start - lookahead > currentTime)
+        {
+            if (result.empty())
+            {
+                result.push_back(&line);
+            }
+            break;
+        }
+        if (line.end + lookbehind >= currentTime)
+        {
+            result.push_back(&line);
+            if (result.size() >= maxLines)
+            {
+                break;
+            }
+        }
+    }
+
+    if (result.empty() && index < lines_.size())
+    {
+        result.push_back(&lines_[index]);
+    }
+    if (result.size() > maxLines)
+    {
+        result.resize(maxLines);
+    }
+    return result;
+}
+
+// Subtitle overlay resources
+
+Subtitle::~Subtitle()
 {
 
     if (fence != VK_NULL_HANDLE)

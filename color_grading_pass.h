@@ -49,7 +49,7 @@ public:
     void createGradingImages();
     void destroyGradingImages();
 
-    void applyCurve(const ColorAdjustments* adjustments);
+    void applyCurve();
 
     void dispatch(VkCommandBuffer commandBuffer,
                   VkPipelineLayout pipelineLayout,

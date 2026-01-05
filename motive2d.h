@@ -4,6 +4,10 @@
 #include <filesystem>
 #include "pose_overlay.h"
 #include "rect_overlay.h"
+#include "color_grading_pass.h"
+#include "color_grading_ui.h"
+#include "subtitle.h"
+#include "scrubber.h"   
 
 const std::filesystem::path kDefaultVideoPath("P1090533_main8_hevc_fast.mkv");
 
@@ -33,8 +37,28 @@ class Motive2D {
 public:
     void renderFrame();
     Motive2D(CliOptions cliOptions);
+    void run();
     ~Motive2D();
     std::vector<std::unique_ptr<Display2D>> windows;
+
+    Engine2D *engine; // this is kiond of like the context
+
+    Display2D *inputWindow = nullptr;
+    Display2D *regionWindow = nullptr;
+    Display2D *gradingWindow = nullptr;
+
+    ColorGrading * colorGrading = nullptr;
+    ColorGradingUi * colorGradingUi = nullptr;
+    Subtitle * subtitle;
+    RectOverlay * rectOverlay;
+    PoseOverlay * poseOverlay;
+    Crop * crop;
+    VkSampler * blackSampler;
+    VideoImageSet * blackVideo;
+    Scrubber * scrubber;
+    FpsOverlay * fpsOverlay;
+    Decoder * decoder;
+
 };
 
 

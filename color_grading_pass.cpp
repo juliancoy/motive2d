@@ -12,17 +12,25 @@
 ColorGrading::ColorGrading(Display2D* display)
     : display_(display), engine_(display ? display->engine : nullptr)
 {
-}
 
-ColorGrading::~ColorGrading()
-{
-    destroyPipeline();
-    destroyCurveResources();
-    destroyGradingImages();
-}
+    // 3: luma
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-void ColorGrading::createPipeline(VkPipelineLayout pipelineLayout)
-{
+    // 4: chroma
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // 5: curve LUT UBO
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
     destroyPipeline();
     if (!engine_ || pipelineLayout == VK_NULL_HANDLE)
     {
@@ -30,6 +38,30 @@ void ColorGrading::createPipeline(VkPipelineLayout pipelineLayout)
     }
 
     pipelineLayout_ = pipelineLayout;
+
+
+    // Pipeline layout with push constants
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(CropPushConstants);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+
+    if (vkCreatePipelineLayout(engine->logicalDevice, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create pipeline layout for Display2D");
+    }
+
+    // Compute pipeline
+    destroyPipeline();
+    createPipeline(pipelineLayout);
+
+    createCurveResources();
 
     auto shaderCode = readSPIRVFile("shaders/grading_pass.comp.spv");
     VkShaderModule shaderModule = engine_->createShaderModule(shaderCode);
@@ -51,7 +83,16 @@ void ColorGrading::createPipeline(VkPipelineLayout pipelineLayout)
     }
 
     vkDestroyShaderModule(engine_->logicalDevice, shaderModule, nullptr);
+
 }
+
+ColorGrading::~ColorGrading()
+{
+    destroyPipeline();
+    destroyCurveResources();
+    destroyGradingImages();
+}
+
 
 void ColorGrading::destroyPipeline()
 {
@@ -284,6 +325,5 @@ void ColorGrading::dispatch(VkCommandBuffer commandBuffer,
                             &descriptorSet,
                             0,
                             nullptr);
-    vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CropPushConstants), &pushConstants);
     vkCmdDispatch(commandBuffer, groupX, groupY, 1);
 }

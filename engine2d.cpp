@@ -46,25 +46,13 @@ Engine2D::Engine2D()
             glfwTerminate();
             glfwInitialized = false;
         }
-        return false;
     }
 
     fpsLastSample = std::chrono::steady_clock::now();
     initialized = true;
     std::cout << "[Engine2D] Engine2D initialized successfully.\n";
-    return true;
 }
 
-
-void Engine2D::setDecodeDebugEnabled(bool enabled)
-{
-    decodeDebugEnabled = enabled;
-}
-
-bool Engine2D::isDecodeDebugEnabled() const
-{
-    return decodeDebugEnabled;
-}
 
 Engine2D::~Engine2D()
 {

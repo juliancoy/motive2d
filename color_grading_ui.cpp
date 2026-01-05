@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
+#include <nlohmann/json.hpp>
 #include <limits>
 #include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
@@ -19,105 +20,94 @@
 #include "fps.h"
 #include "widgets.hpp"
 
-namespace
+float clamp01(float v)
 {
-    float clamp01(float v)
-    {
-        return std::clamp(v, 0.0f, 1.0f);
-    }
+    return std::clamp(v, 0.0f, 1.0f);
+}
 
-    float normalizeExposure(float exposure)
-    {
-        return clamp01((exposure + 2.0f) / 4.0f); // -2..2 -> 0..1
-    }
-
-    float denormalizeExposure(float norm)
-    {
-        return std::clamp(norm * 4.0f - 2.0f, -4.0f, 4.0f);
-    }
-
-    float normalizeContrast(float contrast)
-    {
-        // 0.5..2.0
-        return clamp01((contrast - 0.5f) / 1.5f);
-    }
-
-    float denormalizeContrast(float norm)
-    {
-        return std::clamp(0.5f + norm * 1.5f, 0.1f, 3.0f);
-    }
-
-    float normalizeSaturation(float sat)
-    {
-        // 0..2
-        return clamp01(sat * 0.5f);
-    }
-
-    float denormalizeSaturation(float norm)
-    {
-        return std::clamp(norm * 2.0f, 0.0f, 3.0f);
-    }
-
-    float clampCurveX(float x, float prevX, float nextX)
-    {
-        const float eps = 0.01f;
-        return std::clamp(x, prevX + eps, nextX - eps);
-    }
-
-} // namespace
-
-namespace
+float normalizeExposure(float exposure)
 {
-    glm::vec4 rgbColor(uint32_t r, uint32_t g, uint32_t b, float alpha = 1.0f)
-    {
-        return glm::vec4(static_cast<float>(r) / 255.0f,
-                         static_cast<float>(g) / 255.0f,
-                         static_cast<float>(b) / 255.0f,
-                         alpha);
-    }
+    return clamp01((exposure + 2.0f) / 4.0f); // -2..2 -> 0..1
+}
 
-    widgets::WidgetRenderer &gradingWidgetRenderer()
-    {
-        static widgets::WidgetRenderer renderer{};
-        return renderer;
-    }
+float denormalizeExposure(float norm)
+{
+    return std::clamp(norm * 4.0f - 2.0f, -4.0f, 4.0f);
+}
 
-    bool ensureGradingWidgetRenderer(Engine2D *engine)
+float normalizeContrast(float contrast)
+{
+    // 0.5..2.0
+    return clamp01((contrast - 0.5f) / 1.5f);
+}
+
+float denormalizeContrast(float norm)
+{
+    return std::clamp(0.5f + norm * 1.5f, 0.1f, 3.0f);
+}
+
+float normalizeSaturation(float sat)
+{
+    // 0..2
+    return clamp01(sat * 0.5f);
+}
+
+float denormalizeSaturation(float norm)
+{
+    return std::clamp(norm * 2.0f, 0.0f, 3.0f);
+}
+
+float clampCurveX(float x, float prevX, float nextX)
+{
+    const float eps = 0.01f;
+    return std::clamp(x, prevX + eps, nextX - eps);
+}
+
+glm::vec4 rgbColor(uint32_t r, uint32_t g, uint32_t b, float alpha = 1.0f)
+{
+    return glm::vec4(static_cast<float>(r) / 255.0f,
+                     static_cast<float>(g) / 255.0f,
+                     static_cast<float>(b) / 255.0f,
+                     alpha);
+}
+
+widgets::WidgetRenderer &gradingWidgetRenderer()
+{
+    static widgets::WidgetRenderer renderer{};
+    return renderer;
+}
+
+bool ensureGradingWidgetRenderer(Engine2D *engine)
+{
+    static bool initialized = false;
+    static bool failed = false;
+    if (initialized)
     {
-        static bool initialized = false;
-        static bool failed = false;
-        if (initialized)
-        {
-            return true;
-        }
-        if (failed)
-        {
-            return false;
-        }
-        if (!widgets::initializeWidgetRenderer(engine, gradingWidgetRenderer()))
-        {
-            failed = true;
-            return false;
-        }
-        initialized = true;
         return true;
     }
-} // namespace
-
-bool buildGradingOverlay(Engine2D *engine,
-                         const GradingSettings &settings,
-                         ImageResource &image,
-                         OverlayImageInfo &info,
-                         uint32_t fbWidth,
-                         uint32_t fbHeight,
-                         SliderLayout &layout,
-                         bool previewEnabled,
-                         bool detectionEnabled)
-{
-    if (fbWidth == 0 || fbHeight == 0)
+    if (failed)
     {
         return false;
     }
+    if (!widgets::initializeWidgetRenderer(engine, gradingWidgetRenderer()))
+    {
+        failed = true;
+        return false;
+    }
+    initialized = true;
+    return true;
+}
+
+ColorGradingUi::ColorGradingUi(Engine2D *engine,
+                               const GradingSettings &settings,
+                               ImageResource &image,
+                               OverlayImageInfo &info,
+                               uint32_t fbWidth,
+                               uint32_t fbHeight,
+                               SliderLayout &layout,
+                               bool previewEnabled,
+                               bool detectionEnabled)
+{
 
     constexpr float kBaseWidth = 420.0f;
     constexpr float kBaseHeight = 880.0f;
@@ -153,11 +143,6 @@ bool buildGradingOverlay(Engine2D *engine,
     layout.previewHeight = scaledValue(36.0f);
     layout.detectionWidth = scaledValue(180.0f);
     layout.detectionHeight = scaledValue(36.0f);
-
-    if (!ensureGradingWidgetRenderer(engine))
-    {
-        return false;
-    }
 
     const uint32_t padding = scaledValue(12.0f);
     const uint32_t barWidth = layout.width > padding * 2 ? layout.width - padding * 2 : 0;
@@ -404,16 +389,16 @@ bool buildGradingOverlay(Engine2D *engine,
     return true;
 }
 
-bool handleOverlayClick(const SliderLayout &layout,
-                        double cursorX,
-                        double cursorY,
-                        GradingSettings &settings,
-                        bool doubleClick,
-                        bool rightClick,
-                        bool *loadRequested,
-                        bool *saveRequested,
-                        bool *previewToggleRequested,
-                        bool *detectionToggleRequested)
+bool ColorGradingUi::handleOverlayClick(const SliderLayout &layout,
+                                        double cursorX,
+                                        double cursorY,
+                                        GradingSettings &settings,
+                                        bool doubleClick,
+                                        bool rightClick,
+                                        bool *loadRequested,
+                                        bool *saveRequested,
+                                        bool *previewToggleRequested,
+                                        bool *detectionToggleRequested)
 {
     const double relX = cursorX - static_cast<double>(layout.offset.x);
     const double relY = cursorY - static_cast<double>(layout.offset.y);
@@ -656,7 +641,7 @@ bool handleOverlayClick(const SliderLayout &layout,
     return true;
 }
 
-void setGradingDefaults(GradingSettings &settings)
+void ColorGradingUi::setGradingDefaults(GradingSettings &settings)
 {
     settings.exposure = 0.0f;
     settings.contrast = 1.0f;
@@ -668,208 +653,6 @@ void setGradingDefaults(GradingSettings &settings)
                        glm::vec2(0.33f, 0.33f),
                        glm::vec2(0.66f, 0.66f),
                        glm::vec2(1.0f, 1.0f)};
-}
-
-bool parseFloat(const std::string &src, const std::string &key, float &outValue)
-{
-    const std::string needle = "\"" + key + "\"";
-    size_t pos = src.find(needle);
-    if (pos == std::string::npos)
-    {
-        return false;
-    }
-    pos = src.find(':', pos);
-    if (pos == std::string::npos)
-    {
-        return false;
-    }
-    const char *start = src.c_str() + pos + 1;
-    char *endPtr = nullptr;
-    float v = std::strtof(start, &endPtr);
-    if (endPtr == start)
-    {
-        return false;
-    }
-    outValue = v;
-    return true;
-}
-
-glm::vec3 parseVec3(const std::string &src, const std::string &key, const glm::vec3 &fallback)
-{
-    const std::string needle = "\"" + key + "\"";
-    size_t pos = src.find(needle);
-    if (pos == std::string::npos)
-    {
-        return fallback;
-    }
-    pos = src.find('[', pos);
-    if (pos == std::string::npos)
-    {
-        return fallback;
-    }
-    glm::vec3 result = fallback;
-    const char *cursor = src.c_str() + pos + 1;
-    for (int i = 0; i < 3; ++i)
-    {
-        char *endPtr = nullptr;
-        float v = std::strtof(cursor, &endPtr);
-        if (endPtr == cursor)
-        {
-            return fallback;
-        }
-        result[i] = v;
-        cursor = endPtr;
-        while (*cursor != '\0' && *cursor != ',' && *cursor != ']')
-        {
-            ++cursor;
-        }
-        if (i < 2)
-        {
-            if (*cursor != ',')
-            {
-                return fallback;
-            }
-            ++cursor;
-        }
-    }
-    return result;
-}
-
-std::vector<glm::vec2> parseCurves(const std::string &src,
-                                   const std::string &key,
-                                   const std::vector<glm::vec2> &fallback)
-{
-    const std::string needle = "\"" + key + "\"";
-    size_t pos = src.find(needle);
-    if (pos == std::string::npos)
-    {
-        return fallback;
-    }
-    pos = src.find('[', pos);
-    if (pos == std::string::npos)
-    {
-        return fallback;
-    }
-    std::vector<glm::vec2> result;
-    const char *cursor = src.c_str() + pos + 1;
-    while (true)
-    {
-        // find opening bracket for pair
-        while (*cursor != '[' && *cursor != '\0')
-        {
-            ++cursor;
-        }
-        if (*cursor == '\0')
-        {
-            return fallback;
-        }
-        ++cursor; // skip '['
-        char *endPtr = nullptr;
-        float x = std::strtof(cursor, &endPtr);
-        if (endPtr == cursor)
-        {
-            return fallback;
-        }
-        cursor = endPtr;
-        while (*cursor != ',' && *cursor != '\0')
-        {
-            ++cursor;
-        }
-        if (*cursor == '\0')
-        {
-            return fallback;
-        }
-        ++cursor; // skip ','
-        float y = std::strtof(cursor, &endPtr);
-        if (endPtr == cursor)
-        {
-            return fallback;
-        }
-        result.emplace_back(clamp01(x), clamp01(y));
-        cursor = endPtr;
-        while (*cursor != ']' && *cursor != '\0')
-        {
-            ++cursor;
-        }
-        if (*cursor == '\0')
-        {
-            return fallback;
-        }
-        ++cursor; // past ']'
-        while (*cursor != '[' && *cursor != '\0')
-        {
-            if (*cursor == ']')
-            {
-                // end of curves array
-                if (result.size() >= 2)
-                {
-                    // ensure sorted by x and clamp endpoints
-                    std::sort(result.begin(), result.end(), [](const glm::vec2 &a, const glm::vec2 &b)
-                              { return a.x < b.x; });
-                    result.front() = glm::vec2(0.0f, result.front().y);
-                    result.back() = glm::vec2(1.0f, result.back().y);
-                    return result;
-                }
-                return fallback;
-            }
-            ++cursor;
-        }
-    }
-}
-
-bool loadGradingSettings(const std::filesystem::path &path, GradingSettings &settings)
-{
-    setGradingDefaults(settings);
-    if (!std::filesystem::exists(path))
-    {
-        return false;
-    }
-
-    std::ifstream in(path);
-    if (!in.is_open())
-    {
-        return false;
-    }
-    std::stringstream buffer;
-    buffer << in.rdbuf();
-    std::string contents = buffer.str();
-
-    parseFloat(contents, "exposure", settings.exposure);
-    parseFloat(contents, "contrast", settings.contrast);
-    parseFloat(contents, "saturation", settings.saturation);
-    settings.shadows = parseVec3(contents, "shadows", settings.shadows);
-    settings.midtones = parseVec3(contents, "midtones", settings.midtones);
-    settings.highlights = parseVec3(contents, "highlights", settings.highlights);
-    settings.curves = parseCurves(contents, "curves", settings.curves);
-    return true;
-}
-
-bool saveGradingSettings(const std::filesystem::path &path, const GradingSettings &settings)
-{
-    std::ofstream out(path);
-    if (!out.is_open())
-    {
-        return false;
-    }
-    out << "{\n";
-    out << "  \"exposure\": " << settings.exposure << ",\n";
-    out << "  \"contrast\": " << settings.contrast << ",\n";
-    out << "  \"saturation\": " << settings.saturation << ",\n";
-    out << "  \"shadows\": [" << settings.shadows.r << ", " << settings.shadows.g << ", " << settings.shadows.b << "],\n";
-    out << "  \"midtones\": [" << settings.midtones.r << ", " << settings.midtones.g << ", " << settings.midtones.b << "],\n";
-    out << "  \"highlights\": [" << settings.highlights.r << ", " << settings.highlights.g << ", " << settings.highlights.b << "],\n";
-    out << "  \"curves\": [";
-    for (size_t i = 0; i < settings.curves.size(); ++i)
-    {
-        out << "[" << settings.curves[i].x << ", " << settings.curves[i].y << "]";
-        if (i + 1 < settings.curves.size())
-        {
-            out << ", ";
-        }
-    }
-    out << "]\n";
-    out << "}\n";
-    return true;
 }
 
 void buildCurveLut(const GradingSettings &settings, std::array<float, kCurveLutSize> &outLut)

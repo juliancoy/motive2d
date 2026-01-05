@@ -12,15 +12,6 @@
 #include "graphicsdevice.h"
 #include "image_resource.h"
 
-struct RenderOptions {
-    bool showScrubber = true;
-    bool showFps = true;
-    bool showOverlay = true;
-    std::optional<GradingSettings> grading;
-    std::optional<CropRegion> crop;
-    float playbackSpeed = 1.0f;
-};
-
 
 class Engine2D {
 public:
@@ -35,7 +26,6 @@ public:
     uint32_t &graphicsQueueFamilyIndex;
     VkQueue &videoQueue;
     uint32_t &videoQueueFamilyIndex;
-    ColorGrading colorGrading;
     void createComputeResources();
 
 
@@ -47,10 +37,6 @@ public:
     // Initialize the engine (Vulkan, GLFW, etc.)
     // `requireWindow` controls whether GLFW initialization is performed.
     bool initialize(bool requireWindow = true);
-
-    // Create a 2D display window
-    Display2D* createWindow(int width = 1280, int height = 720, 
-                            const char* title = "Motive 2D");
 
     // Load a video file
     bool loadVideo(const std::filesystem::path& filePath,
@@ -75,19 +61,8 @@ public:
     float getDuration() const { return duration; }
     void setCurrentTime(float timeSeconds);
 
-    // Grading and crop
-    void setGrading(const GradingSettings& settings);
-    void setCrop(const CropRegion& region);
-    void clearGrading();
-    void clearCrop();
-
     // Render a frame to all windows
     bool renderFrame();
-
-    void refreshFpsOverlay();
-
-    RectOverlay& getRectOverlay();
-    PoseOverlay& getPoseOverlay();
 
     void setDecodeDebugEnabled(bool enabled);
     bool isDecodeDebugEnabled() const;
@@ -146,14 +121,6 @@ bool uploadImageData(Engine2D* engine,
     bool playing = true;
     bool decodeDebugEnabled = false;
     
-    // Grading and crop state
-    std::optional<GradingSettings> gradingSettings;
-    std::optional<CropRegion> cropRegion;
-    
-    // Overlay resources
-    RectOverlay rectOverlay;
-    PoseOverlay poseOverlay;
-    bool overlayInitialized = false;
     
     // FPS tracking
     std::chrono::steady_clock::time_point fpsLastSample;
@@ -162,6 +129,4 @@ bool uploadImageData(Engine2D* engine,
     
     // Internal methods
     void updateFpsOverlay();
-    void applyGrading(ColorAdjustments& adjustments) const;
-    RenderOverrides buildRenderOverrides() const;
 };

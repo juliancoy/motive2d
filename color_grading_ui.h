@@ -16,6 +16,8 @@
 #include "fps.h"
 
 class Engine2D;
+struct GradingSettings;
+struct SliderLayout;
 
 enum DrawCommandType : uint32_t
 {
@@ -34,8 +36,45 @@ struct DrawCommand
     glm::vec4 params2 = glm::vec4(0.0f);
 };
 
-struct GradingUiCompute
+class ColorGradingUi
 {
+public:
+    ColorGradingUi(Engine2D *engine,
+                   const GradingSettings &settings,
+                   ImageResource &image,
+                   OverlayImageInfo &info,
+                   uint32_t fbWidth,
+                   uint32_t fbHeight,
+                   SliderLayout &layout,
+                   bool previewEnabled,
+                   bool detectionEnabled);
+    ~ColorGradingUi();
+
+    bool handleOverlayClick(const SliderLayout &layout,
+                            double cursorX,
+                            double cursorY,
+                            GradingSettings &settings,
+                            bool doubleClick = false,
+                            bool rightClick = false,
+                            bool *loadRequested = nullptr,
+                            bool *saveRequested = nullptr,
+                            bool *previewToggleRequested = nullptr,
+                            bool *detectionToggleRequested = nullptr);
+
+    void setGradingDefaults(GradingSettings &settings);
+    bool loadGradingSettings(const std::filesystem::path &path, GradingSettings &settings);
+    bool saveGradingSettings(const std::filesystem::path &path, const GradingSettings &settings);
+    void buildCurveLut(const GradingSettings &settings, std::array<float, kCurveLutSize> &outLut);
+
+    bool initializeGradingUiCompute(Engine2D *Engine2D);
+    void destroyGradingUiCompute();
+    bool run(
+        ImageResource &target,
+        uint32_t width,
+        uint32_t height,
+        const std::vector<DrawCommand> &commands,
+        const std::vector<uint32_t> &glyphData);
+
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
@@ -70,9 +109,6 @@ struct GradingSettings
     std::array<float, 256> curveLut{};
     bool curveEnabled = false;
 };
-
-namespace grading
-{
 
 struct SliderLayout
 {
@@ -124,43 +160,3 @@ struct SliderLayout
     uint32_t detectionWidth = 180;
     uint32_t detectionHeight = 36;
 };
-
-bool initializeGradingUiCompute(Engine2D* engine, GradingUiCompute& comp);
-void destroyGradingUiCompute(GradingUiCompute& comp);
-bool runGradingUiCompute(Engine2D* engine,
-                         GradingUiCompute& comp,
-                         ImageResource& target,
-                         uint32_t width,
-                         uint32_t height,
-                         const std::vector<DrawCommand>& commands,
-                         const std::vector<uint32_t>& glyphData);
-
-// Build/update the grading overlay texture based on current settings; places it centered at bottom.
-bool buildGradingOverlay(Engine2D* engine,
-                         const GradingSettings& settings,
-                         ImageResource& image,
-                         OverlayImageInfo& info,
-                         uint32_t fbWidth,
-                         uint32_t fbHeight,
-                         SliderLayout& layout,
-                         bool previewEnabled,
-                         bool detectionEnabled = false);
-
-// Map a click within the overlay to one of the slider values. Returns true if a value changed.
-bool handleOverlayClick(const SliderLayout& layout,
-                        double cursorX,
-                        double cursorY,
-                        GradingSettings& settings,
-                        bool doubleClick = false,
-                        bool rightClick = false,
-                        bool* loadRequested = nullptr,
-                        bool* saveRequested = nullptr,
-                        bool* previewToggleRequested = nullptr,
-                        bool* detectionToggleRequested = nullptr);
-
-void setGradingDefaults(GradingSettings& settings);
-bool loadGradingSettings(const std::filesystem::path& path, GradingSettings& settings);
-bool saveGradingSettings(const std::filesystem::path& path, const GradingSettings& settings);
-void buildCurveLut(const GradingSettings& settings, std::array<float, kCurveLutSize>& outLut);
-
-} // namespace grading

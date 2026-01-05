@@ -25,7 +25,7 @@ widgets::WidgetRenderer& fpsWidgetRenderer()
     return renderer;
 }
 
-FpsOverlay::FpsOverlay(Engine2D* engine)
+FpsOverlay::FpsOverlay(Engine2D* engine) : engine(engine)
 {
 }
 
@@ -42,7 +42,19 @@ std::string FpsOverlay::formatFpsText(float fps)
     return std::string(buffer);
 }
 
-void updateFpsOverlay(
+
+FpsOverlay::~FpsOverlay()
+{
+    if (sampler != VK_NULL_HANDLE)
+    {
+        vkDestroySampler(engine->logicalDevice, sampler, nullptr);
+        sampler = VK_NULL_HANDLE;
+    }
+}
+
+void FpsOverlay::updateFpsOverlay(
+                      VkSampler overlaySampler,
+                      VkSampler fallbackSampler,
                       float fpsValue,
                       uint32_t fbWidth,
                       uint32_t fbHeight)
@@ -150,32 +162,4 @@ void updateFpsOverlay(
     info.enabled = true;
     lastRefWidth = overlayWidth;
     lastRefHeight = overlayHeight;
-}
-
-
-void Engine2D::updateFpsOverlay()
-{
-    if (!videoLoaded)
-    {
-        return;
-    }
-
-    fpsFrameCounter++;
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - fpsLastSample).count();
-
-    if (elapsed >= 500)
-    {
-        currentFps = static_cast<float>(fpsFrameCounter) * 1000.0f / static_cast<float>(elapsed);
-        fpsFrameCounter = 0;
-        fpsLastSample = now;
-
-        updateFpsOverlay(this,
-                                  playbackState.fpsOverlay,
-                                  playbackState.overlay.sampler,
-                                  playbackState.video.sampler,
-                                  currentFps,
-                                  playbackState.lastRefWidth,
-                                  playbackState.lastRefHeight);
-    }
 }

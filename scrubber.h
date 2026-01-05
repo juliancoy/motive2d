@@ -27,7 +27,7 @@ public:
     VkPipelineLayout pipelineLayout;
     VkDescriptorSet descriptorSet;
     const ScrubberPushConstants &pushConstants;
-    void Run(
+    void run(
         uint32_t groupX,
         uint32_t groupY);
 };

@@ -3,7 +3,7 @@
 
 #include <iostream>
 
-~ImageResource::ImageResource(Engine2D* engine, ImageResource& res)
+ImageResource::~ImageResource()
 {
     if (!engine)
     {

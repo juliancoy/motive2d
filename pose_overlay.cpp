@@ -22,8 +22,6 @@
 #include "engine2d.h"
 #include "utils.h"
 
-namespace
-{
 constexpr std::array<glm::vec4, 4> kLabelPalette = {
     glm::vec4(0.99f, 0.49f, 0.18f, 1.0f),
     glm::vec4(0.36f, 0.72f, 0.84f, 1.0f),
@@ -124,7 +122,6 @@ bool PoseOverlay::parsePoseJsonLine(const std::string& line, int& frameIndex, st
         return false;
     }
 }
-} // namespace
 
 std::filesystem::path PoseOverlay::poseCoordsPath(const std::filesystem::path& videoPath)
 {
@@ -223,89 +220,6 @@ bool PoseOverlay::parseJson(const std::string& text)
     }
 }
 
-bool PoseOverlay::parseTxt(std::istream& stream)
-{
-    detectionData_.clear();
-    struct RawEntry
-    {
-        int frame = 0;
-        std::string label;
-        float confidence = 0.0f;
-        float x1 = 0.0f;
-        float y1 = 0.0f;
-        float x2 = 0.0f;
-        float y2 = 0.0f;
-    };
-
-    std::vector<RawEntry> entries;
-    float maxX = 0.0f;
-    float maxY = 0.0f;
-    std::string line;
-    std::vector<float> coords;
-    bool hasPoseData = false;
-    while (std::getline(stream, line))
-    {
-        auto first = line.find_first_not_of(" \t\r\n");
-        if (first == std::string::npos)
-        {
-            continue;
-        }
-        if (line[first] == '#')
-        {
-            continue;
-        }
-        if (line[first] == '{')
-        {
-            int frame = 0;
-            if (parsePoseJsonLine(line.c_str() + first, frame, coords))
-            {
-                if (frame >= 0)
-                {
-                    storeFrame(frame, coords);
-                    hasPoseData = true;
-                }
-            }
-            continue;
-        }
-        std::istringstream lineStream(line);
-        RawEntry entry;
-        if (!(lineStream >> entry.frame >> entry.label >> entry.confidence >> entry.x1 >> entry.y1 >> entry.x2 >> entry.y2))
-        {
-            continue;
-        }
-        maxX = std::max(maxX, std::max(entry.x1, entry.x2));
-        maxY = std::max(maxY, std::max(entry.y1, entry.y2));
-        entries.push_back(entry);
-    }
-
-    bool detectionValid = false;
-    if (!entries.empty())
-    {
-        const float width = std::max(1.0f, maxX);
-        const float height = std::max(1.0f, maxY);
-        for (const RawEntry& entry : entries)
-        {
-            const float minX = std::min(entry.x1, entry.x2);
-            const float minY = std::min(entry.y1, entry.y2);
-            const float boxW = std::abs(entry.x2 - entry.x1);
-            const float boxH = std::abs(entry.y2 - entry.y1);
-            if (boxW <= 0.0f || boxH <= 0.0f)
-            {
-                continue;
-            }
-            DetectionEntry det{};
-            det.bbox = glm::vec4(minX / width, minY / height, boxW / width, boxH / height);
-            det.color = colorForLabel(entry.label);
-            det.confidence = entry.confidence;
-            det.classId = 0;
-            detectionData_[entry.frame].push_back(det);
-        }
-        detectionValid = !detectionData_.empty();
-    }
-
-    return hasPoseData || detectionValid;
-}
-
 void PoseOverlay::storeFrame(int frame, const std::vector<float>& coords)
 {
     constexpr size_t expectedSize = 5 + 3 * kKeypointCount;
@@ -371,108 +285,6 @@ glm::vec4 PoseOverlay::colorForLabel(const std::string& label)
     const glm::vec4 color = kLabelPalette[index];
     labelColors_.emplace(label, color);
     return color;
-}
-
-const std::vector<DetectionEntry>& PoseOverlay::entriesForFrame(uint32_t frameIndex)
-{
-    if (!valid_)
-    {
-        entriesCache_.clear();
-        return entriesCache_;
-    }
-
-    if (static_cast<int>(frameIndex) == cachedFrameIndex_)
-    {
-        return entriesCache_;
-    }
-
-    cachedFrameIndex_ = static_cast<int>(frameIndex);
-    entriesCache_.clear();
-
-    auto detectionIt = detectionData_.find(static_cast<int>(frameIndex));
-    if (detectionIt != detectionData_.end())
-    {
-        entriesCache_ = detectionIt->second;
-        return entriesCache_;
-    }
-
-    const auto it = frameData_.find(cachedFrameIndex_);
-    if (it == frameData_.end())
-    {
-        return entriesCache_;
-    }
-
-    for (const FramePose& pose : it->second)
-    {
-        for (size_t idx = 0; idx < kKeypointCount; ++idx)
-        {
-            if (!pose.valid[idx])
-            {
-                continue;
-            }
-
-            glm::vec4 bbox;
-            bbox.z = kKeypointBoxSize;
-            bbox.w = kKeypointBoxSize;
-            bbox.x = std::clamp(pose.keypoints[idx].x - bbox.z * 0.5f, 0.0f, 1.0f - bbox.z);
-            bbox.y = std::clamp(pose.keypoints[idx].y - bbox.w * 0.5f, 0.0f, 1.0f - bbox.w);
-
-            DetectionEntry entry{};
-            entry.bbox = bbox;
-            entry.color = pose.color;
-            entry.confidence = 1.0f;
-            entry.classId = static_cast<int>(100 + idx);
-            entriesCache_.push_back(entry);
-        }
-    }
-
-    return entriesCache_;
-}
-
-bool PoseOverlay::ensureDetectionBuffer(VkDeviceSize requestedSize)
-{
-    if (!engine_)
-        return false;
-        
-    const VkDeviceSize entrySize = sizeof(DetectionEntry);
-    VkDeviceSize requiredSize = std::max(entrySize, requestedSize);
-
-    if (detectionBuffer != VK_NULL_HANDLE && detectionBufferSize >= requiredSize)
-    {
-        return true;
-    }
-
-    if (detectionBuffer != VK_NULL_HANDLE)
-    {
-        vkDestroyBuffer(device, detectionBuffer, nullptr);
-        detectionBuffer = VK_NULL_HANDLE;
-    }
-    if (detectionBufferMemory != VK_NULL_HANDLE)
-    {
-        vkFreeMemory(device, detectionBufferMemory, nullptr);
-        detectionBufferMemory = VK_NULL_HANDLE;
-    }
-
-    engine_->createBuffer(requiredSize,
-                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                         detectionBuffer,
-                         detectionBufferMemory);
-    detectionBufferSize = requiredSize;
-    return true;
-}
-
-bool PoseOverlay::ensureImageResource(ImageResource& target, 
-                                     uint32_t width, 
-                                     uint32_t height, 
-                                     VkFormat format, 
-                                     bool& recreated,
-                                     VkImageUsageFlags usage)
-{
-    // This function should be implemented in Engine2D or similar
-    // For now, return true as a placeholder
-    recreated = false;
-    return true;
 }
 
 void PoseOverlay::run(ImageResource& target,
