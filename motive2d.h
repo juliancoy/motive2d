@@ -7,6 +7,7 @@
 #include "color_grading_pass.h"
 #include "color_grading_ui.h"
 #include "subtitle.h"
+#include "decoder.h"   
 #include "scrubber.h"   
 
 const std::filesystem::path kDefaultVideoPath("P1090533_main8_hevc_fast.mkv");
@@ -30,6 +31,8 @@ struct CliOptions
     bool singleFrame = false;
     std::filesystem::path outputImagePath = "frame.png";
     bool subtitleBackground = true;
+    bool pipelineTest = false;
+    std::filesystem::path pipelineTestDir = "intermittant";
 };
 
 
@@ -39,6 +42,10 @@ public:
     Motive2D(CliOptions cliOptions);
     void run();
     ~Motive2D();
+    
+    // Pipeline test functionality
+    void exportPipelineTestFrame();
+    
     std::vector<std::unique_ptr<Display2D>> windows;
 
     Engine2D *engine; // this is kiond of like the context
@@ -58,6 +65,8 @@ public:
     Scrubber * scrubber;
     FpsOverlay * fpsOverlay;
     Decoder * decoder;
+    
+    CliOptions options; // Store command line options
 
 };
 

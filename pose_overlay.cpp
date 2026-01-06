@@ -311,7 +311,7 @@ void PoseOverlay::run(ImageResource& target,
     }
     
     bool recreated = false;
-    if (!ensureImageResource(target, width, height, VK_FORMAT_R8G8B8A8_UNORM, recreated,
+    if (!target.ensure(width, height, VK_FORMAT_R8G8B8A8_UNORM, recreated,
                              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))
     {
         LOG_DEBUG(std::cout << "[PoseOverlay] Failed to ensure image resource" << std::endl);
@@ -653,4 +653,81 @@ PoseOverlay::~PoseOverlay()
         detectionBufferMemory = VK_NULL_HANDLE;
     }
     detectionBufferSize = 0;
+}
+
+bool PoseOverlay::parseTxt(std::istream& input) {
+    // Simple TXT format: each line contains frame index followed by coordinates
+    std::string line;
+    int lineNum = 0;
+    while (std::getline(input, line)) {
+        ++lineNum;
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream iss(line);
+        int frame;
+        if (!(iss >> frame)) continue;
+        std::vector<float> coords;
+        float val;
+        while (iss >> val) {
+            coords.push_back(val);
+        }
+        if (coords.size() >= 5 + 3 * kKeypointCount) {
+            storeFrame(frame, coords);
+        }
+    }
+    return !frameData_.empty();
+}
+
+bool PoseOverlay::ensureDetectionBuffer(VkDeviceSize requiredSize) {
+    if (requiredSize == 0) requiredSize = sizeof(DetectionEntry);
+    if (detectionBufferSize >= requiredSize) return true;
+    
+    // Destroy old buffer if exists
+    if (detectionBuffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(device, detectionBuffer, nullptr);
+        detectionBuffer = VK_NULL_HANDLE;
+    }
+    if (detectionBufferMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, detectionBufferMemory, nullptr);
+        detectionBufferMemory = VK_NULL_HANDLE;
+    }
+    
+    // Create new buffer
+    VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = requiredSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    
+    if (vkCreateBuffer(device, &bufferInfo, nullptr, &detectionBuffer) != VK_SUCCESS) {
+        std::cerr << "[PoseOverlay] Failed to create detection buffer" << std::endl;
+        return false;
+    }
+    
+    VkMemoryRequirements memReq;
+    vkGetBufferMemoryRequirements(device, detectionBuffer, &memReq);
+    
+    VkMemoryAllocateInfo allocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocInfo.allocationSize = memReq.size;
+    allocInfo.memoryTypeIndex = engine_->findMemoryType(memReq.memoryTypeBits, 
+                                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | 
+                                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
+                                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    
+    if (vkAllocateMemory(device, &allocInfo, nullptr, &detectionBufferMemory) != VK_SUCCESS) {
+        std::cerr << "[PoseOverlay] Failed to allocate detection buffer memory" << std::endl;
+        vkDestroyBuffer(device, detectionBuffer, nullptr);
+        detectionBuffer = VK_NULL_HANDLE;
+        return false;
+    }
+    
+    if (vkBindBufferMemory(device, detectionBuffer, detectionBufferMemory, 0) != VK_SUCCESS) {
+        std::cerr << "[PoseOverlay] Failed to bind detection buffer memory" << std::endl;
+        vkDestroyBuffer(device, detectionBuffer, nullptr);
+        vkFreeMemory(device, detectionBufferMemory, nullptr);
+        detectionBuffer = VK_NULL_HANDLE;
+        detectionBufferMemory = VK_NULL_HANDLE;
+        return false;
+    }
+    
+    detectionBufferSize = requiredSize;
+    return true;
 }

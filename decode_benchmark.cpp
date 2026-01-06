@@ -69,5 +69,5 @@ int main(int argc, char** argv)
     }
 
     constexpr double kDecodeDurationSeconds = 10.0;
-    return runDecodeOnlyBenchmark(videoPath, swapUv, kDecodeDurationSeconds);
+    return Decoder::runDecodeOnlyBenchmark(videoPath, swapUv, kDecodeDurationSeconds);
 }

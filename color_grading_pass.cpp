@@ -12,33 +12,43 @@
 ColorGrading::ColorGrading(Display2D* display)
     : display_(display), engine_(display ? display->engine : nullptr)
 {
+    if (!engine_)
+    {
+        throw std::runtime_error("Invalid engine while creating ColorGrading");
+    }
 
-    // 3: luma
-    bindings[3].binding = 3;
-    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    // Define descriptor set layout bindings as per shader (bindings 0,3,4,5)
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+    // Binding 0: output storage image
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    // Binding 3: luma sampler
+    bindings[1].binding = 3;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    // Binding 4: chroma sampler
+    bindings[2].binding = 4;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    // Binding 5: curve LUT UBO
+    bindings[3].binding = 5;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    // 4: chroma
-    bindings[4].binding = 4;
-    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[4].descriptorCount = 1;
-    bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    // 5: curve LUT UBO
-    bindings[5].binding = 5;
-    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    bindings[5].descriptorCount = 1;
-    bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    destroyPipeline();
-    if (!engine_ || pipelineLayout == VK_NULL_HANDLE)
+    // Create descriptor set layout
+    VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.pBindings = bindings.data();
+    if (vkCreateDescriptorSetLayout(engine_->logicalDevice, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
     {
-        throw std::runtime_error("Invalid parameters while creating grading blit pipeline");
+        throw std::runtime_error("Failed to create descriptor set layout for ColorGrading");
     }
-
-    pipelineLayout_ = pipelineLayout;
-
 
     // Pipeline layout with push constants
     VkPushConstantRange pushRange{};
@@ -46,24 +56,24 @@ ColorGrading::ColorGrading(Display2D* display)
     pushRange.offset = 0;
     pushRange.size = sizeof(CropPushConstants);
 
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipelineLayoutInfo.setLayoutCount = 1;
     pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &pushRange;
 
-    if (vkCreatePipelineLayout(engine->logicalDevice, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
+    if (vkCreatePipelineLayout(engine_->logicalDevice, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
     {
-        throw std::runtime_error("Failed to create pipeline layout for Display2D");
+        vkDestroyDescriptorSetLayout(engine_->logicalDevice, descriptorSetLayout, nullptr);
+        throw std::runtime_error("Failed to create pipeline layout for ColorGrading");
     }
 
-    // Compute pipeline
-    destroyPipeline();
-    createPipeline(pipelineLayout);
+    // Store pipeline layout
+    pipelineLayout_ = pipelineLayout;
 
-    createCurveResources();
-
-    auto shaderCode = readSPIRVFile("shaders/grading_pass.comp.spv");
+    // Create compute pipeline
+    auto shaderCode = readSPIRVFile("shaders/grading_pass.spv");
     VkShaderModule shaderModule = engine_->createShaderModule(shaderCode);
 
     VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -78,12 +88,16 @@ ColorGrading::ColorGrading(Display2D* display)
     if (vkCreateComputePipelines(engine_->logicalDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline_) != VK_SUCCESS)
     {
         vkDestroyShaderModule(engine_->logicalDevice, shaderModule, nullptr);
-        pipeline_ = VK_NULL_HANDLE;
+        vkDestroyPipelineLayout(engine_->logicalDevice, pipelineLayout_, nullptr);
+        vkDestroyDescriptorSetLayout(engine_->logicalDevice, descriptorSetLayout, nullptr);
+        pipelineLayout_ = VK_NULL_HANDLE;
         throw std::runtime_error("Failed to create grading blit compute pipeline");
     }
 
     vkDestroyShaderModule(engine_->logicalDevice, shaderModule, nullptr);
+    vkDestroyDescriptorSetLayout(engine_->logicalDevice, descriptorSetLayout, nullptr);
 
+    createCurveResources();
 }
 
 ColorGrading::~ColorGrading()

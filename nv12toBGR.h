@@ -8,7 +8,7 @@
 
 class Engine2D;
 
-struct RgbaToNv12PushConstants
+struct nv12toBGRPushConstants
 {
     glm::ivec2 rgbaSize;
     glm::ivec2 uvSize;
@@ -16,7 +16,7 @@ struct RgbaToNv12PushConstants
     int colorRange;
 };
 
-class rgba2nv12
+class nv12toBGR
 {
     public:
     Engine2D* engine;
@@ -25,23 +25,20 @@ class rgba2nv12
     VkPipeline pipeline;
     VkPipelineLayout pipelineLayout;
     VkDescriptorSet descriptorSet;
-    RgbaToNv12PushConstants& pushConstants;
+    nv12toBGRPushConstants& pushConstants;
     uint32_t groupX;
     uint32_t groupY;
-
-    rgba2nv12(Engine2D* engine,
+    nv12toBGR(Engine2D* engine,
                        uint32_t groupX,
                        uint32_t groupY);
-    ~rgba2nv12();
-    bool run();
+    ~nv12toBGR();
+    void run();
 
-};
-// YUV conversion utilities
-bool convertNv12ToBgr(const uint8_t* nv12,
-                      size_t yBytes,
-                      size_t uvBytes,
-                      int width,
-                      int height,
-                      std::vector<uint8_t>& bgr);
-
-bool saveRawFrameData(const std::filesystem::path& path, const uint8_t* data, size_t size);
+    // YUV conversion utilities
+    bool convertNv12ToBgr(const uint8_t* nv12,
+                        size_t yBytes,
+                        size_t uvBytes,
+                        int width,
+                        int height,
+                        std::vector<uint8_t>& bgr);
+}

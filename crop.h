@@ -1,4 +1,4 @@
-
+#pragma once
 #include <glm/vec4.hpp>
 #include <glm/vec2.hpp>
 
@@ -27,5 +27,7 @@ class Crop
 public:
     Crop();
     ~Crop();
-    void dispatch();
+
+    CropPushConstants cropPushConstants{};
+    void run();
 };

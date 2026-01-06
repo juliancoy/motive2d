@@ -89,26 +89,6 @@ public:
     uint32_t getVideoQueueFamilyIndex();
     VkPhysicalDeviceProperties& getDeviceProperties();
 
-bool ensureImageResource(Engine2D* engine,
-                         ImageResource& res,
-                         uint32_t width,
-                         uint32_t height,
-                         VkFormat format,
-                         bool& recreated,
-                         VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-
-void destroyImageResource(Engine2D* engine, ImageResource& res);
-
-bool uploadImageData(Engine2D* engine,
-                     ImageResource& res,
-                     const void* data,
-                     size_t dataSize,
-                     uint32_t width,
-                     uint32_t height,
-                     VkFormat format,
-                     VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-
-    void createComputeResources();
  private:
 
     bool initialized = false;

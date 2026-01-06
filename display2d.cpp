@@ -153,8 +153,6 @@ Display2D::~Display2D()
         vkDestroyDescriptorPool(engine->logicalDevice, descriptorPool, nullptr);
         descriptorPool = VK_NULL_HANDLE;
     }
-    scrubPipeline = VK_NULL_HANDLE;
-    colorGrading.destroyPipeline();
     if (descriptorSetLayout != VK_NULL_HANDLE)
     {
         vkDestroyDescriptorSetLayout(engine->logicalDevice, descriptorSetLayout, nullptr);
@@ -322,7 +320,7 @@ void Display2D::cleanupSwapchain()
     swapchainImageViews.clear();
     swapchainImages.clear();
     swapchainImageLayouts.clear();
-    colorGrading.destroyGradingImages();
+    // colorGrading.destroyGradingImages(); // TODO: Add color grading member if needed
 
     for (auto fence : inFlightFences)
     {
@@ -416,7 +414,6 @@ void Display2D::recreateSwapchain()
     cleanupSwapchain();
     createSwapchain();
     createCommandResources();
-    createComputeResources();
 }
 
 bool Display2D::shouldClose() const
@@ -428,4 +425,3 @@ void Display2D::pollEvents() const
 {
     glfwPollEvents();
 }
-

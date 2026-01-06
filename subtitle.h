@@ -28,10 +28,6 @@ struct SubtitleOverlayResources
     bool active = false;
 };
 
-fonts::FontBitmap prepareLineBitmap(const std::string &text, uint32_t fontSize)
-{
-    return fonts::renderText(text, fontSize);
-}
 
 struct stringDescriptor
 {
@@ -78,11 +74,19 @@ class Subtitle
 public:
     Subtitle(const std::filesystem::path &path, Engine2D* engine);
     ~Subtitle();
-    bool run(
-                const std::stringDescriptor* lineDescriptors,
-                uint32_t lineCount,
-                VkSampler glyphSampler,
-                bool enableBackground);
+    bool run(Engine2D *engine,
+             SubtitleOverlayResources &resources,
+             const Subtitle &overlay,
+             double currentTime,
+             uint32_t fbWidth,
+             uint32_t fbHeight,
+             glm::vec2 overlayCenter,
+             glm::vec2 overlaySize,
+             ImageResource &overlayTarget,
+             VkSampler overlaySampler,
+             VkSampler fallbackSampler,
+             size_t maxLines = 2,
+             bool enableBackground = true);
     Engine2D* engine = nullptr;
 
     bool load(const std::filesystem::path &path);
@@ -104,19 +108,6 @@ public:
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
 
-    bool updateSubtitleOverlay(Engine2D *engine,
-                               SubtitleOverlayResources &resources,
-                               const Subtitle &overlay,
-                               double currentTime,
-                               uint32_t fbWidth,
-                               uint32_t fbHeight,
-                               glm::vec2 overlayCenter,
-                               glm::vec2 overlaySize,
-                               ImageResource &overlayTarget,
-                               VkSampler overlaySampler,
-                               VkSampler fallbackSampler,
-                               size_t maxLines = 2,
-                               bool enableBackground = true);
 
     void destroySubtitleOverlayResources(Engine2D *engine, SubtitleOverlayResources &resources);
 };

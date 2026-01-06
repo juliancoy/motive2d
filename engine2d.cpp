@@ -36,7 +36,7 @@ Engine2D::Engine2D()
 
     try
     {
-        renderDevice.initialize(requireWindow);
+        renderDevice.initialize(true);
     }
     catch (const std::exception& ex)
     {
@@ -80,9 +80,9 @@ void Engine2D::createBuffer(VkDeviceSize size,
     renderDevice.createBuffer(size, usage, properties, buffer, bufferMemory);
 }
 
-void Engine2D::refreshFpsOverlay()
+void Engine2D::updateFpsOverlay()
 {
-    updateFpsOverlay();
+    // TODO: Implement FPS overlay update
 }
 
 void copyBufferToImage(Engine2D* engine,
@@ -148,4 +148,42 @@ void copyBufferToImage(Engine2D* engine,
                          1, &toShader);
 
     engine->endSingleTimeCommands(cmd);
+}
+
+bool Engine2D::initialize(bool requireWindow) {
+    // Already initialized in constructor
+    return initialized;
+}
+
+void Engine2D::createComputeResources() {
+    // Stub implementation
+    // TODO: Implement compute resource creation
+}
+
+uint32_t Engine2D::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+    return renderDevice.findMemoryType(typeFilter, properties);
+}
+
+VkShaderModule Engine2D::createShaderModule(const std::vector<char>& code) {
+    return renderDevice.createShaderModule(code);
+}
+
+VkQueue& Engine2D::getGraphicsQueue() {
+    return graphicsQueue;
+}
+
+uint32_t Engine2D::getGraphicsQueueFamilyIndex() {
+    return graphicsQueueFamilyIndex;
+}
+
+VkQueue& Engine2D::getVideoQueue() {
+    return videoQueue;
+}
+
+uint32_t Engine2D::getVideoQueueFamilyIndex() {
+    return videoQueueFamilyIndex;
+}
+
+VkPhysicalDeviceProperties& Engine2D::getDeviceProperties() {
+    return renderDevice.getDeviceProperties();
 }

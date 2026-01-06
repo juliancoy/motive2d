@@ -13,8 +13,6 @@
 #include <cmath>
 #include <vector>
 
-namespace overlay
-{
 namespace
 {
 bool ensureBitmapBuffer(Engine2D* engine,
@@ -101,7 +99,7 @@ bool initializeCompositeBitmapCompute(Engine2D* engine, CompositeBitmapCompute& 
         return false;
     }
 
-    auto shaderCode = readSPIRVFile("shaders/composite_bitmap.comp.spv");
+    auto shaderCode = readSPIRVFile("shaders/composite_bitmap.spv");
     VkShaderModule shaderModule = engine->createShaderModule(shaderCode);
 
     VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -403,5 +401,3 @@ bool compositeBitmap(Engine2D* engine,
     target.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     return true;
 }
-
-} // namespace overlay

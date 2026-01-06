@@ -25,8 +25,12 @@ widgets::WidgetRenderer& fpsWidgetRenderer()
     return renderer;
 }
 
-FpsOverlay::FpsOverlay(Engine2D* engine) : engine(engine)
+static bool dummyRecreated = false;
+
+FpsOverlay::FpsOverlay(Engine2D* engine) : engine(engine), image(engine, image, 0, 0, VK_FORMAT_UNDEFINED, dummyRecreated, VK_IMAGE_USAGE_SAMPLED_BIT)
 {
+    // Note: The ImageResource constructor is weird and takes a reference to itself.
+    // We pass dummy values for now; the image will be properly created in updateFpsOverlay.
 }
 
 CompositeBitmapCompute& fpsBitmapCompute()
@@ -63,11 +67,6 @@ void FpsOverlay::updateFpsOverlay(
     lastRefWidth = fbWidth;
     lastRefHeight = fbHeight;
 
-    if (!ensureFpsWidgetRenderer(engine) || !ensureFpsCompositeCompute(engine))
-    {
-        info.enabled = false;
-        return;
-    }
 
     const std::string text = formatFpsText(fpsValue);
     fonts::FontBitmap bitmap = fonts::renderText(text, 26u);
@@ -84,13 +83,11 @@ void FpsOverlay::updateFpsOverlay(
     const VkImageUsageFlags usage =
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     bool recreated = false;
-    if (!ensureImageResource(engine,
-                             image,
-                             overlayWidth,
-                             overlayHeight,
-                             VK_FORMAT_R8G8B8A8_UNORM,
-                             recreated,
-                             usage))
+    if (!image.ensure(overlayWidth,
+                      overlayHeight,
+                      VK_FORMAT_R8G8B8A8_UNORM,
+                      recreated,
+                      usage))
     {
         info.enabled = false;
         return;

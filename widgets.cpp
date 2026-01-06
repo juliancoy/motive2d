@@ -93,7 +93,7 @@ bool initializeWidgetRenderer(Engine2D* engine, WidgetRenderer& renderer)
     std::vector<char> shaderCode;
     try
     {
-        shaderCode = readSPIRVFile("shaders/widgets.comp.spv");
+        shaderCode = readSPIRVFile("shaders/widgets.spv");
     }
     catch (const std::exception& ex)
     {

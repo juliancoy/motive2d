@@ -24,7 +24,6 @@ public:
     Engine2D *engine;
     VkPipeline pipeline;
     VkCommandBuffer commandBuffer;
-    VkPipelineLayout pipelineLayout;
     VkDescriptorSet descriptorSet;
     const ScrubberPushConstants &pushConstants;
     void run(

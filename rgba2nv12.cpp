@@ -3,16 +3,18 @@
 #include "engine2d.h"
 #include "utils.h"
 
+#include <iostream>
+#include <fstream>
 #include <stdexcept>
 
-VkPipeline createRgbaToNv12Pipeline(Engine2D* engine, VkPipelineLayout pipelineLayout)
+rgba2nv12::rgba2nv12(Engine2D* engine)
 {
     if (!engine || pipelineLayout == VK_NULL_HANDLE)
     {
         throw std::runtime_error("Invalid parameters while creating RGBA-to-NV12 pipeline");
     }
 
-    auto shaderCode = readSPIRVFile("shaders/rgba2nv12.comp.spv");
+    auto shaderCode = readSPIRVFile("shaders/rgba2nv12.spv");
     VkShaderModule shaderModule = engine->createShaderModule(shaderCode);
 
     VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -35,7 +37,7 @@ VkPipeline createRgbaToNv12Pipeline(Engine2D* engine, VkPipelineLayout pipelineL
     return pipeline;
 }
 
-void destroyRgbaToNv12Pipeline(Engine2D* engine, VkPipeline pipeline)
+rgba2nv12::~rgba2nv12()
 {
     if (engine && pipeline != VK_NULL_HANDLE)
     {
@@ -43,13 +45,7 @@ void destroyRgbaToNv12Pipeline(Engine2D* engine, VkPipeline pipeline)
     }
 }
 
-void dispatchRgbaToNv12(VkCommandBuffer commandBuffer,
-                        VkPipeline pipeline,
-                        VkPipelineLayout pipelineLayout,
-                        VkDescriptorSet descriptorSet,
-                        const RgbaToNv12PushConstants& pushConstants,
-                        uint32_t groupX,
-                        uint32_t groupY)
+bool rgba2nv12::run()
 {
     if (commandBuffer == VK_NULL_HANDLE || pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE)
     {
@@ -67,53 +63,6 @@ void dispatchRgbaToNv12(VkCommandBuffer commandBuffer,
                             nullptr);
     vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(RgbaToNv12PushConstants), &pushConstants);
     vkCmdDispatch(commandBuffer, groupX, groupY, 1);
-}
-
-
-bool convertNv12ToBgr(const uint8_t* nv12,
-                      size_t yBytes,
-                      size_t uvBytes,
-                      int width,
-                      int height,
-                      std::vector<uint8_t>& bgr)
-{
-    if (!nv12 || width <= 0 || height <= 0 || yBytes == 0 || uvBytes == 0)
-    {
-        return false;
-    }
-
-    const size_t framePixels = static_cast<size_t>(width) * static_cast<size_t>(height);
-    if (bgr.size() != framePixels * 3)
-    {
-        bgr.resize(framePixels * 3);
-    }
-
-    const uint8_t* yPlane = nv12;
-    const uint8_t* uvPlane = nv12 + yBytes;
-
-    for (int row = 0; row < height; ++row)
-    {
-        const uint8_t* yRow = yPlane + static_cast<size_t>(row) * static_cast<size_t>(width);
-        const uint8_t* uvRow = uvPlane + static_cast<size_t>(row / 2) * static_cast<size_t>(width);
-        for (int col = 0; col < width; ++col)
-        {
-            const float Y = static_cast<float>(yRow[col]);
-            const float U = static_cast<float>(uvRow[(col / 2) * 2]) - 128.0f;
-            const float V = static_cast<float>(uvRow[(col / 2) * 2 + 1]) - 128.0f;
-
-            const float y = std::max(0.0f, (Y - 16.0f)) * 1.164383f;
-            const float r = y + 1.596027f * V;
-            const float g = y - 0.391762f * U - 0.812968f * V;
-            const float b = y + 2.017232f * U;
-
-            const size_t dstIndex = (static_cast<size_t>(row) * static_cast<size_t>(width) + static_cast<size_t>(col)) * 3;
-            bgr[dstIndex + 0] = static_cast<uint8_t>(std::clamp(b, 0.0f, 255.0f));
-            bgr[dstIndex + 1] = static_cast<uint8_t>(std::clamp(g, 0.0f, 255.0f));
-            bgr[dstIndex + 2] = static_cast<uint8_t>(std::clamp(r, 0.0f, 255.0f));
-        }
-    }
-
-    return true;
 }
 
 

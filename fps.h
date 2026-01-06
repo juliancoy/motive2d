@@ -28,4 +28,6 @@ public:
         float fpsValue,
         uint32_t fbWidth,
         uint32_t fbHeight);
+    std::string formatFpsText(float fps);
+
 };

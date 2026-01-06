@@ -6,7 +6,6 @@
 
 namespace fonts
 {
-
 struct FontBitmap
 {
     uint32_t width = 0;

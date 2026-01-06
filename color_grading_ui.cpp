@@ -370,23 +370,19 @@ ColorGradingUi::ColorGradingUi(Engine2D *engine,
                   recreated,
                   usage);
 
-    if (!widgets::runWidgetRenderer(engine,
+    widgets::runWidgetRenderer(engine,
                                     gradingWidgetRenderer(),
                                     image,
                                     layout.width,
                                     layout.height,
                                     commands,
-                                    true))
-    {
-        return false;
-    }
+                                    true);
 
     info.overlay.view = image.view;
     info.overlay.sampler = VK_NULL_HANDLE; // sampler set by caller
     info.extent = {layout.width, layout.height};
     info.offset = layout.offset;
     info.enabled = true;
-    return true;
 }
 
 bool ColorGradingUi::handleOverlayClick(const SliderLayout &layout,

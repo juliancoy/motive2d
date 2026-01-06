@@ -17,7 +17,6 @@ public:
     RectOverlay(Engine2D* engine);
     ~RectOverlay();
     void run(
-        const OverlayResources& target,
         const glm::vec2& rectCenter,
         const glm::vec2& rectSize,
         float outerThickness,

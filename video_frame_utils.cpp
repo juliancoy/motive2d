@@ -1,13 +1,18 @@
 #include <algorithm>
 #include <cstring>
+#include <iostream>
+#include <cstdlib>
 #include "video_frame_utils.h"
 #include "decoder.h"
 extern "C" {
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/error.h>
+#include <libavutil/pixdesc.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
 }
 
-namespace video {
 namespace {
 
 struct PlanarFormatConfig {
@@ -401,4 +406,63 @@ void copyDecodedFrameToBuffer(const Decoder& decoder,
     }
 }
 
-} // namespace video
+
+std::string ffmpegErrorString(int err) {
+    char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+    av_make_error_string(errbuf, AV_ERROR_MAX_STRING_SIZE, err);
+    return std::string(errbuf);
+}
+
+std::string pixelFormatDescription(AVPixelFormat fmt) {
+    const char* desc = av_get_pix_fmt_name(fmt);
+    return desc ? std::string(desc) : "unknown";
+}
+
+std::string colorSpaceName(AVColorSpace cs) {
+    switch (cs) {
+        case AVCOL_SPC_RGB: return "RGB";
+        case AVCOL_SPC_BT709: return "BT.709";
+        case AVCOL_SPC_UNSPECIFIED: return "unspecified";
+        case AVCOL_SPC_RESERVED: return "reserved";
+        case AVCOL_SPC_FCC: return "FCC";
+        case AVCOL_SPC_BT470BG: return "BT.470BG";
+        case AVCOL_SPC_SMPTE170M: return "SMPTE170M";
+        case AVCOL_SPC_SMPTE240M: return "SMPTE240M";
+        case AVCOL_SPC_YCGCO: return "YCGCO";
+        case AVCOL_SPC_BT2020_NCL: return "BT.2020 NCL";
+        case AVCOL_SPC_BT2020_CL: return "BT.2020 CL";
+        case AVCOL_SPC_SMPTE2085: return "SMPTE2085";
+        case AVCOL_SPC_CHROMA_DERIVED_NCL: return "chroma derived NCL";
+        case AVCOL_SPC_CHROMA_DERIVED_CL: return "chroma derived CL";
+        case AVCOL_SPC_ICTCP: return "ICTCP";
+        default: return "unknown";
+    }
+}
+
+std::string colorRangeName(AVColorRange cr) {
+    switch (cr) {
+        case AVCOL_RANGE_UNSPECIFIED: return "unspecified";
+        case AVCOL_RANGE_MPEG: return "MPEG (limited)";
+        case AVCOL_RANGE_JPEG: return "JPEG (full)";
+        default: return "unknown";
+    }
+}
+
+
+// Hardware decoding configuration
+bool configureDecodeImplementation(
+    Decoder& decoder,
+    const AVCodec* codec,
+    DecodeImplementation implementation,
+    const std::optional<VulkanInteropContext>& vulkanInterop,
+    bool requireGraphicsQueue,
+    bool debugLogging)
+{
+    // This is a stub implementation; the real implementation would be more complex
+    // For now, just return false to indicate hardware decoding not configured
+    if (debugLogging) {
+        std::cout << "[VideoFrameUtils] configureDecodeImplementation called with implementation=" 
+                  << static_cast<int>(implementation) << std::endl;
+    }
+    return false;
+}

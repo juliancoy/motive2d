@@ -6,6 +6,7 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <cstring>
 #include <array>
@@ -27,6 +28,7 @@
 #include "fps.h"
 #include "color_grading_ui.h"
 #include "utils.h"
+#include "video_frame_utils.h"
 
 extern "C"
 {
@@ -135,7 +137,7 @@ bool Decoder::configureDecodeImplementation(
         // Set device features
         VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         vkGetPhysicalDeviceFeatures(interop.physicalDevice, &features2.features);
-        vulkanCtx->device_features = features2.features;
+        vulkanCtx->device_features = features2;
 
         int ret = av_hwdevice_ctx_init(hwDeviceCtx);
         if (ret < 0)
@@ -454,7 +456,7 @@ bool Decoder::initializeVideoDecoder(const std::filesystem::path &videoPath, con
         std::cout << "[Video] Using " << implementationName;
         if (implementation != DecodeImplementation::Software)
         {
-            std::cout << " (hw " << pixelFormatDescription(hwPixelFormat));
+            std::cout << " (hw " << pixelFormatDescription(hwPixelFormat) << ")";
             if (requestedSwPixelFormat != AV_PIX_FMT_NONE)
             {
                 std::cout << " -> sw " << pixelFormatDescription(requestedSwPixelFormat);

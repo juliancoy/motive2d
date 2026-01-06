@@ -162,6 +162,24 @@ int main(int argc, char **argv){
             opts.poseEnabled = true;
             opts.poseModelBase = std::filesystem::path(arg.substr(std::string("--pose=").size()));
         }
+        else if (arg == "--pipeline-test")
+        {
+            opts.pipelineTest = true;
+            if (i + 1 < argc)
+            {
+                std::string nextArg(argv[i + 1] ? argv[i + 1] : "");
+                if (!nextArg.empty() && nextArg[0] != '-')
+                {
+                    opts.pipelineTestDir = std::filesystem::path(nextArg);
+                    ++i;
+                }
+            }
+        }
+        else if (arg.rfind("--pipeline-test=", 0) == 0)
+        {
+            opts.pipelineTest = true;
+            opts.pipelineTestDir = std::filesystem::path(arg.substr(std::string("--pipeline-test=").size()));
+        }
         else if (arg[0] != '-')
         {
             opts.videoPath = std::filesystem::path(arg);
@@ -186,6 +204,6 @@ int main(int argc, char **argv){
     }
 
     Motive2D* app = new Motive2D(opts);
-    app->run(argc, argv);
+    app->run();
     delete app;
 }

@@ -2,6 +2,14 @@
 
 #include <fstream>
 #include <stdexcept>
+#include <vector>
+#include <cstring>
+#include <iostream>
+#include <cmath>
+
+// Include stb_image_write from ncnn
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "ncnn/src/stb_image_write.h"
 
 std::vector<char> readSPIRVFile(const std::string &filename)
 {
@@ -79,4 +87,61 @@ int msaaIntFromFlag(VkSampleCountFlagBits flag)
     default:
         return 1;
     }
+}
+
+// Image saving implementations
+bool saveImageToPNG(const std::filesystem::path& path, 
+                    const void* data, 
+                    int width, 
+                    int height, 
+                    int channels)
+{
+    if (!data || width <= 0 || height <= 0 || channels < 1 || channels > 4)
+    {
+        std::cerr << "[saveImageToPNG] Invalid parameters" << std::endl;
+        return false;
+    }
+    
+    // Create directory if it doesn't exist
+    std::filesystem::create_directories(path.parent_path());
+    
+    int stride = width * channels;
+    int result = stbi_write_png(path.string().c_str(), width, height, channels, data, stride);
+    
+    if (result == 0)
+    {
+        std::cerr << "[saveImageToPNG] Failed to write PNG: " << path << std::endl;
+        return false;
+    }
+    
+    std::cout << "[saveImageToPNG] Saved: " << path << std::endl;
+    return true;
+}
+
+bool saveImageToJPG(const std::filesystem::path& path, 
+                    const void* data, 
+                    int width, 
+                    int height, 
+                    int channels,
+                    int quality)
+{
+    if (!data || width <= 0 || height <= 0 || channels < 1 || channels > 4)
+    {
+        std::cerr << "[saveImageToJPG] Invalid parameters" << std::endl;
+        return false;
+    }
+    
+    // Create directory if it doesn't exist
+    std::filesystem::create_directories(path.parent_path());
+    
+    int result = stbi_write_jpg(path.string().c_str(), width, height, channels, data, quality);
+    
+    if (result == 0)
+    {
+        std::cerr << "[saveImageToJPG] Failed to write JPG: " << path << std::endl;
+        return false;
+    }
+    
+    std::cout << "[saveImageToJPG] Saved: " << path << std::endl;
+    return true;
 }

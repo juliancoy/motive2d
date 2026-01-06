@@ -16,7 +16,15 @@
 #include "image_resource.h"
 #include "utils.h"
 
-struct DetectionEntry;
+struct DetectionEntry
+{
+    glm::vec4 bbox;        // x, y, width, height (normalized 0-1)
+    glm::vec4 color;       // rgba color for visualization
+    float confidence;      // confidence score
+    int class_id;          // class identifier
+    int padding[2];        // padding for alignment
+};
+
 class Engine2D;
 
 struct PoseOverlayPush
@@ -105,13 +113,7 @@ private:
     void storeFrame(int frame, const std::vector<float> &coords);
     glm::vec4 colorForLabel(const std::string &label);
     bool ensureDetectionBuffer(VkDeviceSize requestedSize);
-    bool ensureImageResource(ImageResource& target, 
-                            uint32_t width, 
-                            uint32_t height, 
-                            VkFormat format, 
-                            bool& recreated,
-                            VkImageUsageFlags usage);
-
+    
     std::unordered_map<int, std::vector<FramePose>> frameData_;
     std::unordered_map<int, std::vector<DetectionEntry>> detectionData_;
     std::unordered_map<std::string, glm::vec4> labelColors_;

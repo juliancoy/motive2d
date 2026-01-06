@@ -237,7 +237,7 @@ for shaderFilename in os.listdir(shader_dir):
     if shaderFilename.split(".")[-1] not in shader_exts:
         continue
     src = os.path.join(shader_dir, shaderFilename)
-    dst = os.path.join(shader_dir, f"{shaderFilename}.spv")
+    dst = os.path.join(shader_dir, f"{shaderFilename[:-5]}.spv")
     if not REBUILD:
         src_mtime = os.path.getmtime(src)
         dst_mtime = os.path.getmtime(dst) if os.path.exists(dst) else -1
