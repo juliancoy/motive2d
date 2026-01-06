@@ -322,6 +322,7 @@ bool Decoder::initialize()
 
 bool Decoder::initializeVideoDecoder(const std::filesystem::path &videoPath, const DecoderInitParams &initParams)
 {
+    std::cout << "[Video] Loading video file: " << videoPath << std::endl;
     if (avformat_open_input(&formatCtx, videoPath.string().c_str(), nullptr, nullptr) < 0)
     {
         std::cerr << "[Video] Failed to open file: " << videoPath << std::endl;
@@ -669,6 +670,9 @@ bool Decoder::decodeNextFrame(DecodedFrame &decodedFrame, bool copyFrameBuffer)
 
         if (receiveResult == 0)
         {
+            std::cout << "[Video] Received frame: width=" << frame->width << " height=" << frame->height
+                      << " format=" << frame->format << " (" << pixelFormatDescription(static_cast<AVPixelFormat>(frame->format)) << ")"
+                      << " data[0]=" << (void*)frame->data[0] << " linesize[0]=" << frame->linesize[0] << std::endl;
             decodedFrame.vkSurface = {};
             const bool isHardwareVulkan =
                 implementation == DecodeImplementation::Vulkan &&
@@ -700,6 +704,10 @@ bool Decoder::decodeNextFrame(DecodedFrame &decodedFrame, bool copyFrameBuffer)
 
             // If Vulkan hardware frames are unavailable, force a CPU copy so playback still works.
             bool doCopy = copyFrameBuffer;
+            std::cout << "[Video] decodeNextFrame: copyFrameBuffer=" << copyFrameBuffer
+                      << ", frame->format=" << frame->format
+                      << ", hwDeviceType=" << hwDeviceType
+                      << ", doCopy=" << doCopy << std::endl;
             if (!doCopy)
             {
                 if (frame->format != AV_PIX_FMT_VULKAN ||
@@ -735,7 +743,11 @@ bool Decoder::decodeNextFrame(DecodedFrame &decodedFrame, bool copyFrameBuffer)
                     workingFrame = swFrame;
                 }
 
+                std::cout << "[Video] copyDecodedFrameToBuffer: width=" << width << " height=" << height
+                          << " bufferSize=" << bufferSize << " outputFormat=" << static_cast<int>(outputFormat)
+                          << " bytesPerComponent=" << bytesPerComponent << std::endl;
                 copyDecodedFrameToBuffer(workingFrame, decodedFrame.buffer);
+                std::cout << "[Video] after copy, buffer size=" << decodedFrame.buffer.size() << std::endl;
                 ptsFrame = workingFrame;
             }
             else
@@ -820,9 +832,7 @@ void Decoder::asyncDecodeLoop()
     DecodedFrame localFrame;
     localFrame.buffer.reserve(bufferSize);
     int frameCount = 0;
-    bool preferZeroCopy =
-        implementation == DecodeImplementation::Vulkan &&
-        hwDeviceType == AV_HWDEVICE_TYPE_VULKAN;
+    bool preferZeroCopy = false; // force copy for now
 
     while (!stopRequested.load())
     {

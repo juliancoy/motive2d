@@ -73,6 +73,12 @@ Display2D::Display2D(Engine2D* engine, int width, int height, const char* title)
     }
 
 
+    graphicsQueue = engine->graphicsQueue;
+    createWindow(title);
+    createSurface();
+    createSwapchain();
+    createCommandResources();
+
     // Descriptor pool and sets (one per swapchain image)
     std::array<VkDescriptorPoolSize, 3> poolSizes{};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -107,13 +113,6 @@ Display2D::Display2D(Engine2D* engine, int width, int height, const char* title)
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-
-    graphicsQueue = engine->graphicsQueue;
-    createWindow(title);
-    createSurface();
-    createSwapchain();
-    createCommandResources();
 }
 
 Display2D::~Display2D()
@@ -424,4 +423,104 @@ bool Display2D::shouldClose() const
 void Display2D::pollEvents() const
 {
     glfwPollEvents();
+}
+
+void Display2D::renderFrame()
+{
+    if (!engine || !swapchain)
+        return;
+
+    // Wait for fence
+    vkWaitForFences(engine->logicalDevice, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+    vkResetFences(engine->logicalDevice, 1, &inFlightFences[currentFrame]);
+
+    // Acquire next image
+    uint32_t imageIndex;
+    VkResult acquireResult = vkAcquireNextImageKHR(engine->logicalDevice, swapchain, UINT64_MAX,
+                                                   imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR || acquireResult == VK_SUBOPTIMAL_KHR)
+    {
+        recreateSwapchain();
+        return;
+    }
+    else if (acquireResult != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to acquire swapchain image");
+    }
+
+    // Debug: print which swapchain image we're using
+    if (renderDebugEnabled())
+    {
+        std::cout << "[Display2D] renderFrame: imageIndex=" << imageIndex
+                  << ", swapchainImages=" << swapchainImages.size()
+                  << ", descriptorSets=" << descriptorSets.size()
+                  << std::endl;
+    }
+
+    // Transition swapchain image layout to PRESENT_SRC_KHR (or keep as is)
+    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier.oldLayout = swapchainImageLayouts[imageIndex];
+    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = swapchainImages[imageIndex];
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    barrier.dstAccessMask = 0;
+
+    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    vkCmdPipelineBarrier(commandBuffer,
+                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                         0,
+                         0, nullptr,
+                         0, nullptr,
+                         1, &barrier);
+    vkEndCommandBuffer(commandBuffer);
+
+    // Submit command buffer
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+    VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+
+    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to submit draw command buffer");
+    }
+
+    // Present
+    VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = &swapchain;
+    presentInfo.pImageIndices = &imageIndex;
+    presentInfo.pResults = nullptr;
+
+    VkResult presentResult = vkQueuePresentKHR(graphicsQueue, &presentInfo);
+    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
+    {
+        recreateSwapchain();
+    }
+    else if (presentResult != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to present swapchain image");
+    }
+
+    swapchainImageLayouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    currentFrame = (currentFrame + 1) % kMaxFramesInFlight;
 }

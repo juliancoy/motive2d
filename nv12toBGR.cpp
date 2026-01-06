@@ -2,6 +2,7 @@
 
 #include "engine2d.h"
 #include "utils.h"
+#include "debug_logging.h"
 
 #include <iostream>
 #include <fstream>
@@ -10,33 +11,10 @@
 nv12toBGR::nv12toBGR(Engine2D* engine,
                        uint32_t groupX,
                        uint32_t groupY)
+    : engine(engine), groupX(groupX), groupY(groupY)
 {
-    this->engine = engine;
-    if (!engine || pipelineLayout == VK_NULL_HANDLE)
-    {
-        throw std::runtime_error("Invalid parameters while creating NV12-to-BGR pipeline");
-    }
-
-    auto shaderCode = readSPIRVFile("shaders/nv12toBGR.spv");
-    VkShaderModule shaderModule = engine->createShaderModule(shaderCode);
-
-    VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stageInfo.module = shaderModule;
-    stageInfo.pName = "main";
-
-    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    pipelineInfo.stage = stageInfo;
-    pipelineInfo.layout = pipelineLayout;
-
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(engine->logicalDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS)
-    {
-        vkDestroyShaderModule(engine->logicalDevice, shaderModule, nullptr);
-        throw std::runtime_error("Failed to create NV12-to-BGR compute pipeline");
-    }
-
-    vkDestroyShaderModule(engine->logicalDevice, shaderModule, nullptr);
+    // Pipeline creation deferred until pipelineLayout is set
+    // TODO: create pipeline layout and pipeline properly
 }
 
 nv12toBGR::~nv12toBGR()
@@ -52,6 +30,11 @@ void nv12toBGR::run()
     if (commandBuffer == VK_NULL_HANDLE || pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE)
     {
         return;
+    }
+
+    if (renderDebugEnabled())
+    {
+        std::cout << "[nv12toBGR] run: groupX=" << groupX << ", groupY=" << groupY << std::endl;
     }
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);

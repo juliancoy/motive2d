@@ -2,39 +2,19 @@
 
 #include "engine2d.h"
 #include "utils.h"
+#include "debug_logging.h"
 
 #include <iostream>
 #include <fstream>
 #include <stdexcept>
 
-rgba2nv12::rgba2nv12(Engine2D* engine)
+rgba2nv12::rgba2nv12(Engine2D* engine,
+                       uint32_t groupX,
+                       uint32_t groupY)
+    : engine(engine), groupX(groupX), groupY(groupY)
 {
-    if (!engine || pipelineLayout == VK_NULL_HANDLE)
-    {
-        throw std::runtime_error("Invalid parameters while creating RGBA-to-NV12 pipeline");
-    }
-
-    auto shaderCode = readSPIRVFile("shaders/rgba2nv12.spv");
-    VkShaderModule shaderModule = engine->createShaderModule(shaderCode);
-
-    VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stageInfo.module = shaderModule;
-    stageInfo.pName = "main";
-
-    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    pipelineInfo.stage = stageInfo;
-    pipelineInfo.layout = pipelineLayout;
-
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(engine->logicalDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS)
-    {
-        vkDestroyShaderModule(engine->logicalDevice, shaderModule, nullptr);
-        throw std::runtime_error("Failed to create RGBA-to-NV12 compute pipeline");
-    }
-
-    vkDestroyShaderModule(engine->logicalDevice, shaderModule, nullptr);
-    return pipeline;
+    // Pipeline creation deferred until pipelineLayout is set
+    // TODO: create pipeline layout and pipeline properly
 }
 
 rgba2nv12::~rgba2nv12()
@@ -49,7 +29,12 @@ bool rgba2nv12::run()
 {
     if (commandBuffer == VK_NULL_HANDLE || pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE)
     {
-        return;
+        return false;
+    }
+
+    if (renderDebugEnabled())
+    {
+        std::cout << "[rgba2nv12] run: groupX=" << groupX << ", groupY=" << groupY << std::endl;
     }
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -63,6 +48,7 @@ bool rgba2nv12::run()
                             nullptr);
     vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(RgbaToNv12PushConstants), &pushConstants);
     vkCmdDispatch(commandBuffer, groupX, groupY, 1);
+    return true;
 }
 
 

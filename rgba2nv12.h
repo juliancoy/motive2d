@@ -19,15 +19,14 @@ struct RgbaToNv12PushConstants
 class rgba2nv12
 {
     public:
-    Engine2D* engine;
-    VkPipeline pipeline;
-    VkCommandBuffer commandBuffer;
-    VkPipeline pipeline;
-    VkPipelineLayout pipelineLayout;
-    VkDescriptorSet descriptorSet;
-    RgbaToNv12PushConstants& pushConstants;
-    uint32_t groupX;
-    uint32_t groupY;
+    Engine2D* engine = nullptr;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    RgbaToNv12PushConstants pushConstants{};
+    uint32_t groupX = 0;
+    uint32_t groupY = 0;
 
     rgba2nv12(Engine2D* engine,
                        uint32_t groupX,

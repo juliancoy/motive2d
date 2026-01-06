@@ -1,4 +1,7 @@
 #include "crop.h"
+#include "debug_logging.h"
+#include <iostream>
+
 Crop::Crop()
 {
 }
@@ -9,6 +12,10 @@ Crop::~Crop()
 
 void Crop::run()
 {
+    if (renderDebugEnabled())
+    {
+        std::cout << "[Crop] run() called" << std::endl;
+    }
     // TODO: Implement proper crop computation
     // For now, set default values to avoid compilation errors
     cropPushConstants.outputSize = glm::vec2(1920.0f, 1080.0f);

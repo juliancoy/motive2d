@@ -19,15 +19,14 @@ struct nv12toBGRPushConstants
 class nv12toBGR
 {
     public:
-    Engine2D* engine;
-    VkPipeline pipeline;
-    VkCommandBuffer commandBuffer;
-    VkPipeline pipeline;
-    VkPipelineLayout pipelineLayout;
-    VkDescriptorSet descriptorSet;
-    nv12toBGRPushConstants& pushConstants;
-    uint32_t groupX;
-    uint32_t groupY;
+    Engine2D* engine = nullptr;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    nv12toBGRPushConstants pushConstants{};
+    uint32_t groupX = 0;
+    uint32_t groupY = 0;
     nv12toBGR(Engine2D* engine,
                        uint32_t groupX,
                        uint32_t groupY);
@@ -41,4 +40,4 @@ class nv12toBGR
                         int width,
                         int height,
                         std::vector<uint8_t>& bgr);
-}
+};

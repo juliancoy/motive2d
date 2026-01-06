@@ -3,9 +3,11 @@
 #include "display2d.h"
 #include "engine2d.h"
 #include "utils.h"
+#include "debug_logging.h"
 
 #include <array>
 #include <cstring>
+#include <iostream>
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 
@@ -73,7 +75,7 @@ ColorGrading::ColorGrading(Display2D* display)
     pipelineLayout_ = pipelineLayout;
 
     // Create compute pipeline
-    auto shaderCode = readSPIRVFile("shaders/grading_pass.spv");
+    auto shaderCode = readSPIRVFile("shaders/color_grading_pass.spv");
     VkShaderModule shaderModule = engine_->createShaderModule(shaderCode);
 
     VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -328,6 +330,11 @@ void ColorGrading::dispatch(VkCommandBuffer commandBuffer,
     if (commandBuffer == VK_NULL_HANDLE || pipeline_ == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE)
     {
         return;
+    }
+
+    if (renderDebugEnabled())
+    {
+        std::cout << "[ColorGrading] dispatch: groupX=" << groupX << ", groupY=" << groupY << std::endl;
     }
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);

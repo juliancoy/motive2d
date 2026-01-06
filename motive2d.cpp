@@ -2,6 +2,7 @@
 
 #include "crop.h"
 #include "decoder.h"
+#include "debug_logging.h"
 #include "engine2d.h"
 #include "fps.h"
 #include "pose_overlay.h"
@@ -27,6 +28,13 @@ std::condition_variable g_stageCv;
 Motive2D::Motive2D(CliOptions cliOptions)
     : options(cliOptions)
 {
+    // Enable debug logging if requested
+    if (options.debugLogging)
+    {
+        setDebugLoggingEnabled(true);
+        setRenderDebugEnabled(true);
+    }
+
     engine = new Engine2D();
     if (!engine || !engine->initialize())
     {
@@ -42,14 +50,38 @@ Motive2D::Motive2D(CliOptions cliOptions)
     blackSampler = VK_NULL_HANDLE;
     scrubber = new Scrubber(engine);
     fpsOverlay = new FpsOverlay(engine);
-    // colorGrading = new ColorGrading(engine); // TODO: Needs Display2D, not Engine2D
-    // colorGradingUi = new ColorGradingUi(engine); // TODO: Needs proper constructor arguments
-    colorGrading = nullptr;
-    colorGradingUi = nullptr;
+    // colorGrading and colorGradingUi will be created after windows
+
     DecoderInitParams params{};
-    params.requireGraphicsQueue = true;
+    params.implementation = DecodeImplementation::Software;
+    params.requireGraphicsQueue = false;
     params.debugLogging = cliOptions.debugLogging;
     decoder = new Decoder(cliOptions.videoPath, params);
+
+    // Create windows based on options
+    if (options.showInput)
+    {
+        inputWindow = new Display2D(engine, 800, 600, "Input");
+        windows.emplace_back(inputWindow);
+        std::cout << "[Motive2D] Created input window" << std::endl;
+    }
+    if (options.showRegion)
+    {
+        regionWindow = new Display2D(engine, 800, 600, "Region");
+        windows.emplace_back(regionWindow);
+        std::cout << "[Motive2D] Created region window" << std::endl;
+    }
+    if (options.showGrading)
+    {
+        gradingWindow = new Display2D(engine, 800, 600, "Grading");
+        windows.emplace_back(gradingWindow);
+        std::cout << "[Motive2D] Created grading window" << std::endl;
+        // Create ColorGrading attached to gradingWindow
+        colorGrading = new ColorGrading(gradingWindow);
+        // TODO: Create ColorGradingUi with appropriate parameters
+        // For now, create a dummy GradingSettings and SliderLayout
+        // colorGradingUi = new ColorGradingUi(...);
+    }
 
     // Create pipeline test directory if needed
     if (options.pipelineTest)
@@ -74,24 +106,47 @@ Motive2D::~Motive2D()
 
 void Motive2D::run()
 {
-    // TODO: Implement proper run loop
-    // These classes have different run() signatures or no run() method
-    // For now, just call what's available
-
-    // decoder->run(); // Decoder doesn't have run()
-    // colorGrading->run(); // ColorGrading doesn't have run()
-    // colorGradingUi->run(); // Needs arguments
-    // rectOverlay->run(); // Needs 6 arguments
-    // poseOverlay->run(); // Needs 10 arguments
-    crop->run(); // We fixed this
-    // scrubber->run(); // Needs 2 arguments
-    // subtitle->run(); // Needs 13 arguments
-    // fpsOverlay->run(); // FpsOverlay doesn't have run()
-
-    // If pipeline test is enabled, export a test frame
+    // If pipeline test is enabled, export a test frame and exit
     if (options.pipelineTest)
     {
         exportPipelineTestFrame();
+        return;
+    }
+
+    // Main rendering loop
+    while (!windows.empty())
+    {
+        //run all partds of the pipeline for each frame
+        // TODO: implement fences between pipelines
+        decoder->run();
+        colorGradingUi->run();
+        subtitle->run();
+        rectOverlay->run();
+        poseOverlay->run();
+        crop->run();
+        scrubber->run();
+        fpsOverlay->run();
+
+        // Poll events for all windows
+        glfwPollEvents();
+
+        // Check if any window should close
+        bool anyWindowOpen = false;
+        for (auto& win : windows)
+        {
+            if (!win->shouldClose())
+            {
+                anyWindowOpen = true;
+                // Render frame
+                win->renderFrame();
+            }
+        }
+        if (!anyWindowOpen)
+            break;
+
+        // TODO: Update video frames from decoder and pass to windows
+        // For now, just keep rendering blank frames
+        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 fps
     }
 }
 
@@ -122,12 +177,20 @@ void Motive2D::exportPipelineTestFrame()
             {
                 // Wait for decoding to start and buffer a frame
                 DecodedFrame frame;
-
-                decoder->acquireDecodedFrame(frame);
+                bool gotFrame = false;
+                for (int i = 0; i < 10; ++i)
+                {
+                    if (decoder->acquireDecodedFrame(frame))
+                    {
+                        gotFrame = true;
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
                 width = decoder->getWidth();
                 height = decoder->getHeight();
 
-                if (!frame.buffer.empty() && width > 0 && height > 0)
+                if (gotFrame && !frame.buffer.empty() && width > 0 && height > 0)
                 {
                     std::cout << "[Motive2D] Decoded frame: " << width << "x" << height
                               << ", buffer size: " << frame.buffer.size() << " bytes" << std::endl;
@@ -196,31 +259,8 @@ void Motive2D::exportPipelineTestFrame()
     // If we couldn't save a real frame, fall back to test pattern
     if (!savedRealFrame)
     {
-        std::cout << "[Motive2D] Could not decode video frame, using test pattern" << std::endl;
-
-        width = 640;
-        height = 480;
-        channels = 4;
-        testImage.resize(width * height * channels);
-
-        // Fill with a test pattern
-        for (int y = 0; y < height; ++y)
-        {
-            for (int x = 0; x < width; ++x)
-            {
-                int idx = (y * width + x) * channels;
-                testImage[idx + 0] = static_cast<uint8_t>(255 * x / width);  // R
-                testImage[idx + 1] = static_cast<uint8_t>(255 * y / height); // G
-                testImage[idx + 2] = 128;                                    // B
-                testImage[idx + 3] = 255;                                    // A
-            }
-        }
-
-        std::filesystem::path inputPath = basePath / "input_stage.png";
-        if (saveImageToPNG(inputPath, testImage.data(), width, height, channels))
-        {
-            std::cout << "[Motive2D] Saved test pattern as input stage: " << inputPath << std::endl;
-        }
+        std::cout << "[Motive2D] Couldn't Decode!" << std::endl;
+        return;
     }
 
     // Region stage (with some modification)

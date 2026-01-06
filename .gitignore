@@ -31,3 +31,4 @@ run_yolo11_seg*
 scripts
 decode_benchmark
 perf.data
+intermittant
