@@ -95,6 +95,11 @@ int main(int argc, char **argv){
             opts.debugLogging = true;
             continue;
         }
+        if (arg == "--gpu-decode" || arg == "--vulkan-decode")
+        {
+            opts.gpuDecode = true;
+            continue;
+        }
         if (arg.rfind("--windows", 0) == 0)
         {
             std::string list;

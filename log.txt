@@ -1,0 +1,551 @@
+[RenderDevice] Using Vulkan API 1.3.275
+[RenderDevice] Validation layer VK_LAYER_KHRONOS_validation not available. Continuing without validation layers.
+[RenderDevice] Enabled instance extensions (2): VK_KHR_surface, VK_KHR_xcb_surface
+
+Available Physical Devices:
+-------------------------
+Device: NVIDIA GeForce RTX 3060
+Device: llvmpipe (LLVM 20.1.2, 256 bits)
+Evaluating device: NVIDIA GeForce RTX 3060
+  Queue family 0: 16 queues, flags: G C T S Video: None
+  Queue family 1: 2 queues, flags: T S Video: None
+  Queue family 2: 8 queues, flags: C T S Video: None
+  Queue family 3: 1 queues, flags: T S VD Video: H264D H265D 
+  Queue family 4: 1 queues, flags: T S VE Video: H264E H265E 
+  Queue family 5: 1 queues, flags: T S Video: None
+  -> Selected discrete GPU with separate graphics (0) and video decode (3) queue families. Found video encode queue family 4
+
+Selected Device Properties:
+-------------------------
+Using graphics queue family: 0, video decode queue family: 3, video encode queue family: 4
+
+Device: NVIDIA GeForce RTX 3060
+  API Version: 1.4.312
+  Driver Version: 2434253120
+  Vendor ID: 4318
+  Device ID: 9476
+  Device Type: Discrete GPU
+
+  Important Limits:
+    maxImageDimension2D: 32768
+    maxPushConstantsSize: 256 bytes
+    maxMemoryAllocationCount: 4294967295
+    maxSamplerAllocationCount: 4000
+    bufferImageGranularity: 1024 bytes
+
+  Important Features:
+    geometryShader: Yes
+    tessellationShader: Yes
+    samplerAnisotropy: Yes
+    textureCompressionBC: Yes
+
+  Memory Heaps (3):
+    Heap 0: 12288 MB (Device Local)
+    Heap 1: 48137 MB
+    Heap 2: 246 MB (Device Local)
+[RenderDevice] Enabled device extensions (20): VK_KHR_swapchain, VK_KHR_synchronization2, VK_KHR_timeline_semaphore, VK_KHR_push_descriptor, VK_KHR_external_semaphore_fd, VK_KHR_external_memory_fd, VK_EXT_external_memory_host, VK_EXT_image_drm_format_modifier, VK_EXT_descriptor_buffer, VK_EXT_host_image_copy, VK_EXT_descriptor_indexing, VK_KHR_video_queue, VK_KHR_video_decode_queue, VK_KHR_video_decode_h264, VK_KHR_video_decode_h265, VK_KHR_video_encode_queue, VK_KHR_video_encode_h264, VK_KHR_video_encode_h265, VK_KHR_video_maintenance1, VK_EXT_shader_object
+[RenderDevice] Using dedicated video decode queue family 3
+[RenderDevice] Using dedicated video encode queue family 4
+[Engine2D] Engine2D initialized successfully.
+[Video] Loading video file: "P1090533_main8_hevc_fast.mkv"
+[Video] Stream pixel format: yuv420p -> outputFormat=2 chromaDiv=2x2 bytesPerComponent=1 bitDepth=8 swapUV=no colorSpace=BT.709 colorRange=MPEG (limited) implementation=Software
+[Video] Using Software decoder
+[Video] asyncDecodeLoop started
+[nv12toBGR] Pipeline created successfully
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b9af28800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b963e9800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b937fd800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Created input window
+[Motive2D] Created region window
+[Motive2D] Created grading window
+[Motive2D] Created synchronization objects for 3 frames
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b97d94800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] after copy, buffer size=13271040
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b9244e800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b99750800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b8d5c4800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b8c08b800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b8ee07800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736bcf919800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b90b41800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b84ef5800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b831f3800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736bce319800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b814ae800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736bcef59800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b902be800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b963e9800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b7e53e800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b937fd800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b7f26b800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b9af28800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b8d5c4800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b9244e800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b8c08b800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b70b62800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b97d94800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b84ef5800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] after copy, buffer size=13271040
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b99750800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b831f3800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Video] asyncDecodeLoop: decoded frame 30, pts=1.21s
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b79ee2800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b8ee07800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b902be800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b90b41800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b963e9800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736bcf919800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=1, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736bce319800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 1
+[Motive2D] recordComputeCommands called for frame 1
+[Motive2D] Starting compute pipeline for frame 1
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 1
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=2, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b9af28800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 2
+[Motive2D] recordComputeCommands called for frame 2
+[Motive2D] Starting compute pipeline for frame 2
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 2
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=3, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736bcef59800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1
+[Video] after copy, buffer size=13271040
+[Motive2D] Updated descriptor sets for frame 0
+[Motive2D] recordComputeCommands called for frame 0
+[Motive2D] Starting compute pipeline for frame 0
+[Crop] run() called
+[Motive2D] Would dispatch ColorGrading pipeline
+[Motive2D] Recorded compute commands for frame 0
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Display2D] renderFrame: imageIndex=0, swapchainImages=4, descriptorSets=4
+[Video] Received frame: width=4096 height=2160 format=0 (yuv420p) data[0]=0x736b8d5c4800 linesize[0]=4096
+[Video] decodeNextFrame: copyFrameBuffer=1, frame->format=0, hwDeviceType=0, doCopy=1
+[Video] copyDecodedFrameToBuffer: width=4096 height=2160 bufferSize=13271040 outputFormat=2 bytesPerComponent=1

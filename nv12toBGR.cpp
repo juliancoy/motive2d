@@ -17,18 +17,124 @@ nv12toBGR::nv12toBGR(Engine2D* engine,
     // TODO: create pipeline layout and pipeline properly
 }
 
+void nv12toBGR::createPipeline()
+{
+    if (!engine)
+    {
+        throw std::runtime_error("Invalid engine while creating nv12toBGR pipeline");
+    }
+
+    // Define descriptor set layout bindings as per shader (bindings 0,1,2)
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
+    // Binding 0: yPlane storage image (r8)
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    // Binding 1: uvPlane storage image (rg8)
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    // Binding 2: bgrOutput storage image (rgba8)
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+    // Create descriptor set layout
+    VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.pBindings = bindings.data();
+    if (vkCreateDescriptorSetLayout(engine->logicalDevice, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS)
+    {
+        throw std::runtime_error("Failed to create descriptor set layout for nv12toBGR");
+    }
+
+    // Pipeline layout with push constants
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(nv12toBGRPushConstants);
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushRange;
+
+    if (vkCreatePipelineLayout(engine->logicalDevice, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
+    {
+        vkDestroyDescriptorSetLayout(engine->logicalDevice, descriptorSetLayout, nullptr);
+        descriptorSetLayout = VK_NULL_HANDLE;
+        throw std::runtime_error("Failed to create pipeline layout for nv12toBGR");
+    }
+
+    // Create compute pipeline
+    auto shaderCode = readSPIRVFile("shaders/nv12toBGR.spv");
+    VkShaderModule shaderModule = engine->createShaderModule(shaderCode);
+
+    VkPipelineShaderStageCreateInfo stageInfo{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stageInfo.module = shaderModule;
+    stageInfo.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    pipelineInfo.stage = stageInfo;
+    pipelineInfo.layout = pipelineLayout;
+
+    if (vkCreateComputePipelines(engine->logicalDevice, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS)
+    {
+        vkDestroyShaderModule(engine->logicalDevice, shaderModule, nullptr);
+        vkDestroyPipelineLayout(engine->logicalDevice, pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(engine->logicalDevice, descriptorSetLayout, nullptr);
+        pipelineLayout = VK_NULL_HANDLE;
+        descriptorSetLayout = VK_NULL_HANDLE;
+        throw std::runtime_error("Failed to create nv12toBGR compute pipeline");
+    }
+
+    vkDestroyShaderModule(engine->logicalDevice, shaderModule, nullptr);
+
+    // Debug log
+    if (renderDebugEnabled())
+    {
+        std::cout << "[nv12toBGR] Pipeline created successfully" << std::endl;
+    }
+}
+
 nv12toBGR::~nv12toBGR()
 {
-    if (engine && pipeline != VK_NULL_HANDLE)
+    if (engine)
     {
-        vkDestroyPipeline(engine->logicalDevice, pipeline, nullptr);
+        if (pipeline != VK_NULL_HANDLE)
+        {
+            vkDestroyPipeline(engine->logicalDevice, pipeline, nullptr);
+        }
+        if (pipelineLayout != VK_NULL_HANDLE)
+        {
+            vkDestroyPipelineLayout(engine->logicalDevice, pipelineLayout, nullptr);
+        }
+        if (descriptorSetLayout != VK_NULL_HANDLE)
+        {
+            vkDestroyDescriptorSetLayout(engine->logicalDevice, descriptorSetLayout, nullptr);
+        }
     }
 }
 
 void nv12toBGR::run()
 {
+    if (renderDebugEnabled()) {
+        std::cout << "[nv12toBGR] run() called, checking conditions..." << std::endl;
+        std::cout << "[nv12toBGR] commandBuffer=" << commandBuffer 
+                  << ", pipeline=" << pipeline 
+                  << ", pipelineLayout=" << pipelineLayout 
+                  << ", descriptorSet=" << descriptorSet << std::endl;
+    }
     if (commandBuffer == VK_NULL_HANDLE || pipeline == VK_NULL_HANDLE || pipelineLayout == VK_NULL_HANDLE)
     {
+        if (renderDebugEnabled()) {
+            std::cout << "[nv12toBGR] Skipping dispatch due to null handle" << std::endl;
+        }
         return;
     }
 

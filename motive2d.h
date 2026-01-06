@@ -2,15 +2,20 @@
 #include <fstream>
 #include <optional>
 #include <filesystem>
+#include <vector>
 #include "pose_overlay.h"
 #include "rect_overlay.h"
 #include "color_grading_pass.h"
 #include "color_grading_ui.h"
 #include "subtitle.h"
-#include "decoder.h"   
+#include "decoder_vulkan.h"
 #include "scrubber.h"   
+#include "nv12toBGR.h"
 
 const std::filesystem::path kDefaultVideoPath("P1090533_main8_hevc_fast.mkv");
+
+// Maximum number of frames that can be in flight (triple buffering)
+constexpr int MAX_FRAMES_IN_FLIGHT = 3;
 
 
 struct CliOptions
@@ -33,8 +38,30 @@ struct CliOptions
     bool subtitleBackground = true;
     bool pipelineTest = false;
     std::filesystem::path pipelineTestDir = "intermittant";
+    bool gpuDecode = false;  // Force Vulkan hardware decoding
 };
 
+
+// Intermediate BGR image for processing (after NV12 conversion)
+struct BGRImage {
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView imageView = VK_NULL_HANDLE;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+// Frame synchronization resources
+struct FrameResources {
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;      // Single buffer for all compute
+    VkFence fence = VK_NULL_HANDLE;                      // CPU-GPU sync
+    VkSemaphore decodeReadySemaphore = VK_NULL_HANDLE;   // Timeline (optional)
+    VkSemaphore computeCompleteSemaphore = VK_NULL_HANDLE; // Binary (for present)
+    uint64_t decodeSemaphoreValue = 0;
+
+    // Descriptor sets for compute pipelines
+    VkDescriptorSet nv12toBGRDescriptorSet = VK_NULL_HANDLE;
+};
 
 class Motive2D {   
 public:
@@ -60,14 +87,33 @@ public:
     RectOverlay * rectOverlay;
     PoseOverlay * poseOverlay;
     Crop * crop;
+    nv12toBGR * nv12toBGRPipeline = nullptr;
     VkSampler * blackSampler;
     VideoImageSet * blackVideo;
     Scrubber * scrubber;
     FpsOverlay * fpsOverlay;
-    Decoder * decoder;
+    DecoderVulkan * decoder;
     
     CliOptions options; // Store command line options
 
+private:
+    // Synchronization resources
+    std::vector<FrameResources> frames;
+    int currentFrame = 0;
+
+    // Intermediate images for processing
+    std::vector<BGRImage> bgrImages; // One per frame in flight
+
+    // Descriptor resources
+    VkDescriptorPool computeDescriptorPool = VK_NULL_HANDLE;
+
+    // Helper functions
+    void createSynchronizationObjects();
+    void destroySynchronizationObjects();
+    void createComputeResources();
+    void destroyComputeResources();
+    void recordComputeCommands(VkCommandBuffer commandBuffer, int frameIndex);
+    void updateDescriptorSets(int frameIndex);
 };
 
 

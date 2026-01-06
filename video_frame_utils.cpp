@@ -3,7 +3,7 @@
 #include <iostream>
 #include <cstdlib>
 #include "video_frame_utils.h"
-#include "decoder.h"
+#include "decoder_vulkan.h"
 extern "C" {
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
@@ -45,7 +45,7 @@ constexpr PlanarFormatConfig kPlanarFormats[] = {
 #endif
 };
 
-bool configureNv12Format(Decoder& decoder, AVPixelFormat format)
+bool configureNv12Format(DecoderVulkan& decoder, AVPixelFormat format)
 {
     if (format != AV_PIX_FMT_NV12
 #ifdef AV_PIX_FMT_NV21
@@ -75,7 +75,7 @@ bool configureNv12Format(Decoder& decoder, AVPixelFormat format)
     return true;
 }
 
-bool configurePlanarFormat(Decoder& decoder, AVPixelFormat pixFormat)
+bool configurePlanarFormat(DecoderVulkan& decoder, AVPixelFormat pixFormat)
 {
     for (const auto& config : kPlanarFormats) {
         if (pixFormat != config.pixelFormat) {
@@ -150,7 +150,7 @@ void copyNv12FrameToBuffer(const AVFrame* frame,
     }
 }
 
-void copyPlanarFrameToBuffer(const Decoder& decoder,
+void copyPlanarFrameToBuffer(const DecoderVulkan& decoder,
                              AVFrame* frame,
                              std::vector<uint8_t>& buffer)
 {
@@ -369,7 +369,7 @@ void copyPlanarFrameToBuffer(const Decoder& decoder,
 
 } // namespace
 
-bool configureFormatForPixelFormat(Decoder& decoder, AVPixelFormat pixFmt)
+bool configureFormatForPixelFormat(DecoderVulkan& decoder, AVPixelFormat pixFmt)
 {
     if (pixFmt == AV_PIX_FMT_NONE) {
         return false;
@@ -390,7 +390,7 @@ bool configureFormatForPixelFormat(Decoder& decoder, AVPixelFormat pixFmt)
     return false;
 }
 
-void copyDecodedFrameToBuffer(const Decoder& decoder,
+void copyDecodedFrameToBuffer(const DecoderVulkan& decoder,
                               AVFrame* frame,
                               std::vector<uint8_t>& buffer)
 {
@@ -451,7 +451,7 @@ std::string colorRangeName(AVColorRange cr) {
 
 // Hardware decoding configuration
 bool configureDecodeImplementation(
-    Decoder& decoder,
+    DecoderVulkan& decoder,
     const AVCodec* codec,
     DecodeImplementation implementation,
     const std::optional<VulkanInteropContext>& vulkanInterop,
