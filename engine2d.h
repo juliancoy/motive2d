@@ -89,6 +89,8 @@ public:
     uint32_t getVideoQueueFamilyIndex();
     VkPhysicalDeviceProperties& getDeviceProperties();
 
+    VkImageView createImageView(VkImage image, VkFormat format);
+
  private:
 
     bool initialized = false;

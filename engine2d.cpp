@@ -187,3 +187,38 @@ uint32_t Engine2D::getVideoQueueFamilyIndex() {
 VkPhysicalDeviceProperties& Engine2D::getDeviceProperties() {
     return renderDevice.getDeviceProperties();
 }
+
+
+// Helper: Create a Vulkan image view
+VkImageView Engine2D::createImageView(VkImage image, VkFormat format)
+{
+    if (image == VK_NULL_HANDLE)
+    {
+        throw std::runtime_error("[Video] createImageView: invalid VkImage handle");
+    }
+    if (format == VK_FORMAT_UNDEFINED)
+    {
+        throw std::runtime_error("[Video] createImageView: undefined VkFormat for image");
+    }
+    
+    VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    viewInfo.image = image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.components = {VK_COMPONENT_SWIZZLE_IDENTITY,
+                           VK_COMPONENT_SWIZZLE_IDENTITY,
+                           VK_COMPONENT_SWIZZLE_IDENTITY,
+                           VK_COMPONENT_SWIZZLE_IDENTITY};
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+    
+    VkImageView view = VK_NULL_HANDLE;
+    if (vkCreateImageView(logicalDevice, &viewInfo, nullptr, &view) != VK_SUCCESS)
+    {
+        throw std::runtime_error("[Video] createImageView: vkCreateImageView failed");
+    }
+    return view;
+}

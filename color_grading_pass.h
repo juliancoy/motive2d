@@ -1,84 +1,125 @@
+// color_grading_pass.h
 #pragma once
 
 #include <array>
-#include <cstddef>
 #include <cstdint>
 #include <vector>
 
-#include <glm/glm.hpp>
-#include <glm/vec2.hpp>
-#include <glm/vec4.hpp>
 #include <vulkan/vulkan.h>
+#include <glm/glm.hpp>
 
-#include "color_adjustments.h"
-
-class Display2D;
 class Engine2D;
 
-constexpr int kMaxFramesInFlight = 2;
-constexpr float kScrubberMargin = 20.0f;
-constexpr float kScrubberHeight = 64.0f;
-constexpr float kScrubberMinWidth = 200.0f;
-constexpr float kPlayIconSize = 28.0f;
 
-inline const std::array<float, kCurveLutSize>& identityCurveLut()
+constexpr size_t kCurveLutSize = 256;
+
+struct ColorAdjustments
 {
-    static std::array<float, kCurveLutSize> lut = [] {
-        std::array<float, kCurveLutSize> arr{};
-        for (size_t i = 0; i < kCurveLutSize; ++i)
-        {
-            arr[i] = static_cast<float>(i) / static_cast<float>(kCurveLutSize - 1);
-        }
-        return arr;
-    }();
-    return lut;
-}
+    float exposure = 0.0f;
+    float contrast = 1.0f;
+    float saturation = 1.0f;
+    glm::vec3 shadows{1.0f};
+    glm::vec3 midtones{1.0f};
+    glm::vec3 highlights{1.0f};
+    std::array<float, kCurveLutSize> curveLut{};
+    bool curveEnabled = false;
+};
+
 
 class ColorGrading
 {
 public:
-    explicit ColorGrading(Display2D* display);
+    struct Output
+    {
+        VkImage image = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkExtent2D extent{0, 0};
+        VkFormat format = VK_FORMAT_UNDEFINED;
+    };
+
+    // You decide framesInFlight (typically swapchain images count).
+    ColorGrading(Engine2D* engine, uint32_t framesInFlight);
     ~ColorGrading();
 
-    void createPipeline(VkPipelineLayout pipelineLayout);
-    void destroyPipeline();
+    ColorGrading(const ColorGrading&) = delete;
+    ColorGrading& operator=(const ColorGrading&) = delete;
 
-    void createCurveResources();
-    void destroyCurveResources();
+    // Call when the output size/format should change (usually on swapchain recreate).
+    void resize(VkExtent2D extent, VkFormat format);
 
-    void createGradingImages();
-    void destroyGradingImages();
+    // Input is an RGBA image view + sampler (from prior pass).
+    // The input layout that the shader expects should be consistent (typically SHADER_READ_ONLY_OPTIMAL).
+    void setInputRGBA(VkImageView rgbaView, VkSampler rgbaSampler);
 
-    void applyCurve();
+    // Optional: if you want the pass itself to handle transitioning the input layout
+    // you could add setInputImage(VkImage image, VkImageView view, VkImageLayout* trackedLayout) etc.
+    // But simplest is: caller transitions input and passes view+sampler.
 
-    void dispatch(VkCommandBuffer commandBuffer,
-                  VkPipelineLayout pipelineLayout,
-                  VkDescriptorSet descriptorSet,
-                  uint32_t groupX,
-                  uint32_t groupY);
+    // Per-frame dispatch. Produces output in a known layout (see outputLayout()).
+    void dispatch(VkCommandBuffer cmd, uint32_t frameIndex);
 
-    VkPipeline pipeline() const { return pipeline_; }
-    VkBuffer curveUBO() const { return curveUBO_; }
-    VkDeviceSize curveUBOSize() const { return curveUBOSize_; }
+    // Query output for a given frame slot.
+    Output output(uint32_t frameIndex) const;
 
-    std::vector<VkImage> gradingImages;
-    std::vector<VkDeviceMemory> gradingImageMemories;
-    std::vector<VkImageView> gradingImageViews;
-    std::vector<VkImageLayout> gradingImageLayouts;
+    // If you want, expose what layout the output will be in after dispatch.
+    // (e.g. SHADER_READ_ONLY_OPTIMAL if you transition it at end)
+    VkImageLayout outputLayout(uint32_t frameIndex) const;
+
+    // Adjustments storage (same as you have today)
     ColorAdjustments* adjustments = nullptr;
+    
+    VkExtent2D outputExtent_{0, 0};
+    VkFormat outputFormat_ = VK_FORMAT_UNDEFINED;
 
-    Display2D* display_ = nullptr;
-    Engine2D* engine_ = nullptr;
-    VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
+
+private:
+    void createPipeline_();
+    void destroyPipeline_();
+
+    void createCurveResources_();
+    void destroyCurveResources_();
+    void applyCurve();
+    void uploadCurveData_(const std::array<float, /*kCurveLutSize*/ 256>& curveData);
+
+    void createOutputs_();
+    void destroyOutputs_();
+
+    void createDescriptors_();
+    void destroyDescriptors_();
+    void rebuildDescriptorSets_();
+
+private:
+    Engine2D* engine = nullptr;
+    uint32_t framesInFlight_ = 0;
+
+    // Input
+    VkImageView rgbaView_ = VK_NULL_HANDLE;
+    VkSampler rgbaSampler_ = VK_NULL_HANDLE;
+
+    // Pipeline
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
 
+    // Outputs per frame
+    std::vector<VkImage> outImages_;
+    std::vector<VkDeviceMemory> outMem_;
+    std::vector<VkImageView> outViews_;
+    std::vector<VkImageLayout> outLayouts_;
+
+    // Descriptors per frame
+    VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> descriptorSets_;
+
+    // Curve UBO
     VkBuffer curveUBO_ = VK_NULL_HANDLE;
     VkDeviceMemory curveUBOMemory_ = VK_NULL_HANDLE;
     void* curveUBOMapped_ = nullptr;
-    VkDeviceSize curveUBOSize_ = sizeof(glm::vec4) * 64;
-    std::array<float, kCurveLutSize> lastCurveLut_{};
-    bool lastCurveEnabled_ = false;
-    bool curveUploaded_ = false;
+    size_t curveUBOSize_ = 0;
 
-    void uploadCurveData(const std::array<float, kCurveLutSize>& curveData);
+    // Cache/dirty tracking for curve upload (same idea as your current code)
+    bool curveUploaded_ = false;
+    bool lastCurveEnabled_ = false;
+    std::array<float, 256> lastCurveLut_{};
 };

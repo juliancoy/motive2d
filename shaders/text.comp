@@ -1,0 +1,98 @@
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+layout(local_size_x=16, local_size_y=16, local_size_z=1) in;
+
+layout(set=0, binding=0, rgba8) uniform image2D outImage;
+
+// SDF font atlas (single channel suggested: R8_UNORM, sample .r)
+layout(set=0, binding=1) uniform sampler2D fontAtlas;
+
+// Per-tile glyph list indirection
+struct TileSpan { uint start; uint count; };
+layout(std430, set=0, binding=2) readonly buffer TileSpans { TileSpan spans[]; } tileSpans;
+layout(std430, set=0, binding=3) readonly buffer TileGlyphs { uint glyphIndices[]; } tileGlyphs;
+
+// Glyph instance (already laid out in pixel space)
+struct GlyphInstance {
+    // pixel-space quad
+    int x0, y0, x1, y1;      // inclusive/exclusive bounds: [x0,x1), [y0,y1)
+    // atlas UV rect
+    float u0, v0, u1, v1;
+    // styling
+    vec4 textColor;          // rgba
+    vec4 bgColor;            // rgba (optional)
+    // misc
+    uint flags;              // bits: bg enable, outline, etc.
+};
+
+layout(std430, set=0, binding=4) readonly buffer Glyphs { GlyphInstance g[]; } glyphs;
+
+layout(push_constant) uniform Push {
+    ivec2 imageSize;
+    ivec2 tileGridSize;      // (ceil(w/16), ceil(h/16))
+    float sdfPxRange;        // atlas distance range in pixels at 1:1 (tune per font bake)
+} pushC;
+
+float sdfAlpha(float dist, float pxRange)
+{
+    // dist assumed in [0..1], where 0.5 is the edge for typical SDF bakes
+    // convert to signed distance around edge:
+    float sd = dist - 0.5;
+
+    // approximate screen-space smoothing width:
+    // use derivatives if available; in compute they are not. So use a constant based on scale.
+    // If your glyph UV mapping corresponds to pixel size, pxRange can work well enough.
+    float w = 0.5 / max(pxRange, 1e-5); // narrower if pxRange larger
+    return smoothstep(-w, w, sd);
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= pushC.imageSize.x || pixel.y >= pushC.imageSize.y) return;
+
+    // Figure out which tile we are in
+    ivec2 tile = pixel / 16;
+    uint tileIndex = uint(tile.y * pushC.tileGridSize.x + tile.x);
+
+    vec4 base = imageLoad(outImage, pixel);
+    vec4 color = base;
+
+    TileSpan span = tileSpans.spans[tileIndex];
+
+    // Iterate only glyphs overlapping this tile
+    for (uint j = 0; j < span.count; ++j)
+    {
+        uint gi = tileGlyphs.glyphIndices[span.start + j];
+        GlyphInstance inst = glyphs.g[gi];
+
+        // AABB test in pixel space
+        if (pixel.x < inst.x0 || pixel.x >= inst.x1 || pixel.y < inst.y0 || pixel.y >= inst.y1)
+            continue;
+
+        // Optional background behind glyph quad
+        if ((inst.flags & 1u) != 0u && inst.bgColor.a > 0.0)
+        {
+            color = mix(color, inst.bgColor, inst.bgColor.a);
+        }
+
+        // Compute uv in the glyph quad
+        vec2 quadSize = vec2(inst.x1 - inst.x0, inst.y1 - inst.y0);
+        vec2 t = (vec2(pixel) - vec2(inst.x0, inst.y0) + vec2(0.5)) / quadSize;
+        vec2 uv = mix(vec2(inst.u0, inst.v0), vec2(inst.u1, inst.v1), t);
+
+        float dist = texture(fontAtlas, uv).r;
+        float a = sdfAlpha(dist, pushC.sdfPxRange);
+
+        if (a > 0.0)
+        {
+            // premultiply-ish blending (simple over)
+            vec4 src = vec4(inst.textColor.rgb, inst.textColor.a * a);
+            color.rgb = mix(color.rgb, src.rgb, src.a);
+            color.a = max(color.a, src.a);
+        }
+    }
+
+    imageStore(outImage, pixel, color);
+}

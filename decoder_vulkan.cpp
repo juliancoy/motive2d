@@ -1,1123 +1,975 @@
+// decoder_vulkan.cpp
 #include "decoder_vulkan.h"
 
 #include <algorithm>
-#include <chrono>
-#include <cstdint>
-#include <deque>
-#include <exception>
-#include <filesystem>
-#include <fstream>
-#include <iostream>
 #include <cstring>
-#include <array>
-#include <optional>
-#include <string>
-#include <sstream>
-#include <memory>
-#include <utility>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <thread>
 #include <vector>
 
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/vec2.hpp>
-
-#include <vulkan/vulkan.h>
-
-#include "display2d.h"
-#include "engine2d.h"
-#include "fps.h"
-#include "color_grading_ui.h"
-#include "utils.h"
-#include "video_frame_utils.h"
-
-extern "C"
-{
+extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/error.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_vulkan.h>
 }
 
-// Look for the sample video in the current directory (files were moved up).
-const std::filesystem::path kDefaultVideoPath = std::filesystem::path("P1090533_main8_hevc_fast.mkv");
+#include "engine2d.h"
 
-// Constructor
-DecoderVulkan::DecoderVulkan(const std::filesystem::path &videoPath, Engine2D* engine)
-    : engine(engine), playing(false)
+// Interrupt callback forward declaration
+static int interrupt_callback(void *opaque);
+
+// Returns a readable description of an FFmpeg pixel format.
+static std::string pixelFormatDescription(AVPixelFormat fmt)
 {
-    std::cout << "[Video] Loading video file: " << videoPath << std::endl;
-    
-    // Open the input file
-    if (avformat_open_input(&formatCtx, videoPath.string().c_str(), nullptr, nullptr) < 0)
+    const char* name = av_get_pix_fmt_name(fmt);
+    if (!name) name = "unknown";
+
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(fmt);
+    if (!desc) {
+        return std::string(name);
+    }
+
+    // Components / bit depth
+    int maxDepth = 0;
+    for (int i = 0; i < desc->nb_components; ++i) {
+        maxDepth = std::max(maxDepth, desc->comp[i].depth);
+    }
+
+    const int chromaW = desc->log2_chroma_w;
+    const int chromaH = desc->log2_chroma_h;
+
+    std::string out;
+    out.reserve(128);
+    out += name;
+    out += " (";
+    out += std::to_string(desc->nb_components);
+    out += "c, depth=";
+    out += std::to_string(maxDepth);
+    out += ", chroma=2^(-";
+    out += std::to_string(chromaW);
+    out += ", -";
+    out += std::to_string(chromaH);
+    out += ")";
+
+    // Flags (planar, RGB, alpha, etc.)
+    out += ", flags=";
+    bool anyFlag = false;
+
+    auto addFlag = [&](const char* f) {
+        if (anyFlag) out += "|";
+        out += f;
+        anyFlag = true;
+    };
+
+    if (desc->flags & AV_PIX_FMT_FLAG_PLANAR)     addFlag("planar");
+    if (desc->flags & AV_PIX_FMT_FLAG_RGB)        addFlag("rgb");
+    if (desc->flags & AV_PIX_FMT_FLAG_ALPHA)      addFlag("alpha");
+    if (desc->flags & AV_PIX_FMT_FLAG_PAL)        addFlag("pal");
+    if (desc->flags & AV_PIX_FMT_FLAG_BITSTREAM)  addFlag("bitstream");
+    if (desc->flags & AV_PIX_FMT_FLAG_HWACCEL)    addFlag("hwaccel");
+    if (desc->flags & AV_PIX_FMT_FLAG_BAYER)      addFlag("bayer");
+    if (desc->flags & AV_PIX_FMT_FLAG_FLOAT)      addFlag("float");
+
+    if (!anyFlag) out += "none";
+
+    return out;
+}
+
+
+// Local FFmpeg error-string helper (replaces ffmpegErrorString)
+static std::string avErrStr(int err)
+{
+    char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
+    av_strerror(err, buf, sizeof(buf));
+    return std::string(buf);
+}
+
+// ------------------------------
+// DecodedFrame RAII
+// ------------------------------
+DecodedFrame::~DecodedFrame() { reset(); }
+
+DecodedFrame::DecodedFrame(DecodedFrame&& other) noexcept {
+    *this = std::move(other);
+}
+
+DecodedFrame& DecodedFrame::operator=(DecodedFrame&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    ptsSeconds = other.ptsSeconds;
+    vk = other.vk;
+    avFrame = other.avFrame;
+    other.avFrame = nullptr;
+    other.vk = VulkanSurface{};
+    other.ptsSeconds = 0.0;
+    return *this;
+}
+
+void DecodedFrame::reset() {
+    if (avFrame) {
+        av_frame_free(&avFrame);
+        avFrame = nullptr;
+    }
+    ptsSeconds = 0.0;
+    vk = VulkanSurface{};
+}
+
+// ------------------------------
+// BoundedQueue impl
+// ------------------------------
+template <typename T, size_t Capacity>
+bool BoundedQueue<T, Capacity>::push(T&& item) {
+    std::unique_lock<std::mutex> lk(m_);
+    cvNotFull_.wait(lk, [&]{ return stopped_ || count_ < Capacity; });
+    if (stopped_) return false;
+
+    buf_[tail_] = std::move(item);
+    tail_ = (tail_ + 1) % Capacity;
+    ++count_;
+
+    lk.unlock();
+    cvNotEmpty_.notify_one();
+    return true;
+}
+
+template <typename T, size_t Capacity>
+bool BoundedQueue<T, Capacity>::try_pop(T& out) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (count_ == 0) return false;
+
+    out = std::move(buf_[head_]);
+    head_ = (head_ + 1) % Capacity;
+    --count_;
+
+    cvNotFull_.notify_one();
+    return true;
+}
+
+template <typename T, size_t Capacity>
+bool BoundedQueue<T, Capacity>::pop(T& out) {
+    std::unique_lock<std::mutex> lk(m_);
+    cvNotEmpty_.wait(lk, [&]{ return stopped_ || count_ > 0; });
+    if (count_ == 0) return false;
+
+    out = std::move(buf_[head_]);
+    head_ = (head_ + 1) % Capacity;
+    --count_;
+
+    lk.unlock();
+    cvNotFull_.notify_one();
+    return true;
+}
+
+template <typename T, size_t Capacity>
+void BoundedQueue<T, Capacity>::stop() {
     {
-        throw std::runtime_error("[Video] Failed to open file: " + videoPath.string());
+        std::lock_guard<std::mutex> lk(m_);
+        stopped_ = true;
+    }
+    cvNotEmpty_.notify_all();
+    cvNotFull_.notify_all();
+}
+
+template <typename T, size_t Capacity>
+void BoundedQueue<T, Capacity>::reset() {
+    std::lock_guard<std::mutex> lk(m_);
+    head_ = tail_ = count_ = 0;
+    stopped_ = false;
+}
+
+template <typename T, size_t Capacity>
+size_t BoundedQueue<T, Capacity>::size() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return count_;
+}
+
+// Explicit instantiate the templates we use
+template class BoundedQueue<DecodedFrame, DecoderVulkan::kBufferedFrames>;
+
+// ------------------------------
+// DecoderVulkan
+// ------------------------------
+DecoderVulkan::DecoderVulkan(const std::filesystem::path& videoPath, Engine2D* eng)
+    : engine(eng)
+{
+    if (!openInputAndCodec(videoPath)) {
+        valid = false;
+        return;
+    }
+
+    // Create sampler lazily or now
+    if (engine) {
+        sampler = createLinearClampSampler();
+    }
+
+    valid = true;
+}
+
+DecoderVulkan::~DecoderVulkan() {
+    stopAsyncDecoding();
+    destroyExternalVideoViews();
+
+    if (engine && sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(engine->logicalDevice, sampler, nullptr);
+        sampler = VK_NULL_HANDLE;
+    }
+
+    cleanupFFmpeg();
+}
+
+bool DecoderVulkan::openInputAndCodec(const std::filesystem::path& videoPath)
+{
+    if (avformat_open_input(&formatCtx, videoPath.string().c_str(), nullptr, nullptr) < 0) {
+        throw std::runtime_error("[Video] Failed to open input: " + videoPath.string());
     }
 
     formatCtx->interrupt_callback.callback = interrupt_callback;
     formatCtx->interrupt_callback.opaque = this;
 
-    // Find stream information
-    if (avformat_find_stream_info(formatCtx, nullptr) < 0)
-    {
-        avformat_close_input(&formatCtx);
-        throw std::runtime_error("[Video] Unable to read stream info for: " + videoPath.string());
+    if (avformat_find_stream_info(formatCtx, nullptr) < 0) {
+        throw std::runtime_error("[Video] Failed to find stream info.");
     }
 
-    // Find the video stream
     videoStreamIndex = av_find_best_stream(formatCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    if (videoStreamIndex < 0)
-    {
-        avformat_close_input(&formatCtx);
-        throw std::runtime_error("[Video] No video stream found in file: " + videoPath.string());
+    if (videoStreamIndex < 0) {
+        throw std::runtime_error("[Video] No video stream found.");
     }
 
-    AVStream *videoStream = formatCtx->streams[videoStreamIndex];
-    
-    // Find the decoder
-    const AVCodec *codec = avcodec_find_decoder(videoStream->codecpar->codec_id);
-    if (!codec)
-    {
-        avformat_close_input(&formatCtx);
-        throw std::runtime_error("[Video] Decoder not found for stream.");
+    AVStream* videoStream = formatCtx->streams[videoStreamIndex];
+    streamTimeBase = videoStream->time_base;
+
+    const AVCodec* codec = avcodec_find_decoder(videoStream->codecpar->codec_id);
+    if (!codec) {
+        throw std::runtime_error("[Video] Decoder not found.");
     }
 
-    // Allocate codec context
     codecCtx = avcodec_alloc_context3(codec);
-    if (!codecCtx)
-    {
-        avformat_close_input(&formatCtx);
+    if (!codecCtx) {
         throw std::runtime_error("[Video] Failed to allocate codec context.");
     }
 
-    // Copy codec parameters
-    if (avcodec_parameters_to_context(codecCtx, videoStream->codecpar) < 0)
-    {
-        avcodec_free_context(&codecCtx);
-        avformat_close_input(&formatCtx);
-        throw std::runtime_error("[Video] Unable to copy codec parameters.");
-    }
-    
-    hwDeviceType = AV_HWDEVICE_TYPE_VULKAN;
-    hwPixelFormat = AV_PIX_FMT_VULKAN;
-
-    // Configure Vulkan device context
-    hwDeviceCtx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
-    if (!hwDeviceCtx)
-    {
-        hardwareInitFailureReason = "Failed to allocate Vulkan device context";
-        return;
+    if (avcodec_parameters_to_context(codecCtx, videoStream->codecpar) < 0) {
+        throw std::runtime_error("[Video] Failed to copy codec parameters.");
     }
 
-    AVHWDeviceContext *deviceCtx = reinterpret_cast<AVHWDeviceContext *>(hwDeviceCtx->data);
-    AVVulkanDeviceContext *vulkanCtx = static_cast<AVVulkanDeviceContext *>(deviceCtx->hwctx);
-
-    // Initialize all fields to zero
-    memset(vulkanCtx, 0, sizeof(*vulkanCtx));
-
-    // Set only the absolutely required fields
-    vulkanCtx->inst = engine->instance;
-    vulkanCtx->phys_dev = engine->physicalDevice;
-    vulkanCtx->act_dev = engine->logicalDevice;
-    
-    // Set get_proc_addr to system function
-    vulkanCtx->get_proc_addr = vkGetInstanceProcAddr;
-    
-    // Set deprecated queue family fields for compatibility
-    // queue_family_index should be graphics queue family
-    vulkanCtx->queue_family_index = engine->graphicsQueueFamilyIndex;
-    vulkanCtx->nb_graphics_queues = 1;
-    
-    // Transfer queue family (use graphics queue)
-    vulkanCtx->queue_family_tx_index = engine->graphicsQueueFamilyIndex;
-    vulkanCtx->nb_tx_queues = 1;
-    
-    // Compute queue family (use graphics queue)
-    vulkanCtx->queue_family_comp_index = engine->graphicsQueueFamilyIndex;
-    vulkanCtx->nb_comp_queues = 1;
-    
-    // Video decode queue family
-    vulkanCtx->queue_family_decode_index = engine->videoQueueFamilyIndex;
-    vulkanCtx->nb_decode_queues = 1;
-    
-    // Video encode queue family (not available, set to -1)
-    vulkanCtx->queue_family_encode_index = -1;
-    vulkanCtx->nb_encode_queues = 0;
-    
-    // Set queue families in qf array (new API)
-    // Must include all queue families mentioned in deprecated fields
-    int qf_index = 0;
-    
-    // Graphics queue family (also used for transfer and compute)
-    vulkanCtx->qf[qf_index].idx = engine->graphicsQueueFamilyIndex;
-    vulkanCtx->qf[qf_index].num = 1;
-    vulkanCtx->qf[qf_index].flags = static_cast<VkQueueFlagBits>(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
-    vulkanCtx->qf[qf_index].video_caps = static_cast<VkVideoCodecOperationFlagBitsKHR>(0);
-    qf_index++;
-    
-    // Video decode queue family
-    vulkanCtx->qf[qf_index].idx = engine->videoQueueFamilyIndex;
-    vulkanCtx->qf[qf_index].num = 1;
-    vulkanCtx->qf[qf_index].flags = static_cast<VkQueueFlagBits>(VK_QUEUE_TRANSFER_BIT | VK_QUEUE_VIDEO_DECODE_BIT_KHR);
-    vulkanCtx->qf[qf_index].video_caps = static_cast<VkVideoCodecOperationFlagBitsKHR>(
-        VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR | VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR);
-    qf_index++;
-    
-    // Add transfer queue family (same as graphics, but required for compatibility)
-    vulkanCtx->qf[qf_index].idx = engine->graphicsQueueFamilyIndex;
-    vulkanCtx->qf[qf_index].num = 1;
-    vulkanCtx->qf[qf_index].flags = static_cast<VkQueueFlagBits>(VK_QUEUE_TRANSFER_BIT);
-    vulkanCtx->qf[qf_index].video_caps = static_cast<VkVideoCodecOperationFlagBitsKHR>(0);
-    qf_index++;
-    
-    // Add compute queue family (same as graphics, but required for compatibility)
-    vulkanCtx->qf[qf_index].idx = engine->graphicsQueueFamilyIndex;
-    vulkanCtx->qf[qf_index].num = 1;
-    vulkanCtx->qf[qf_index].flags = static_cast<VkQueueFlagBits>(VK_QUEUE_COMPUTE_BIT);
-    vulkanCtx->qf[qf_index].video_caps = static_cast<VkVideoCodecOperationFlagBitsKHR>(0);
-    qf_index++;
-    
-    vulkanCtx->nb_qf = qf_index;
-
-    // Set lock/unlock queue functions (NULL = use internal implementation)
-    vulkanCtx->lock_queue = nullptr;
-    vulkanCtx->unlock_queue = nullptr;
-
-    // Set extension arrays
-    static const char* instanceExtensions[] = {
-        "VK_KHR_surface",
-        "VK_KHR_xcb_surface"
-    };
-    
-    static const char* deviceExtensions[] = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
-        VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
-        VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
-        VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
-        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
-        VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME,
-        VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
-        VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
-        VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME,
-        VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
-        VK_KHR_VIDEO_QUEUE_EXTENSION_NAME,
-        VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME,
-        VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME,
-        VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME,
-        VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME,
-        VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME,
-        VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME,
-        VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME,
-        VK_EXT_SHADER_OBJECT_EXTENSION_NAME
-    };
-    
-    vulkanCtx->enabled_inst_extensions = instanceExtensions;
-    vulkanCtx->nb_enabled_inst_extensions = 2;
-    vulkanCtx->enabled_dev_extensions = deviceExtensions;
-    vulkanCtx->nb_enabled_dev_extensions = 20;
-
-    // Set minimal device features
-    VkPhysicalDeviceFeatures2 features2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    vkGetPhysicalDeviceFeatures(engine->physicalDevice, &features2.features);
-    vulkanCtx->device_features = features2;
-
-    int ret = av_hwdevice_ctx_init(hwDeviceCtx);
-    if (ret < 0)
-    {
-        hardwareInitFailureReason = "Failed to initialize Vulkan device context: " + ffmpegErrorString(ret);
-        av_buffer_unref(&hwDeviceCtx);
+    // Initialize Vulkan hw device context (requires Engine2D)
+    if (!initFFmpegVulkanDevice()) {
+        // valid stays false; caller can inspect reason
+        return false;
     }
 
-    codecCtx->hw_device_ctx = av_buffer_ref(hwDeviceCtx);
-
-    const int streamBitDepth = determineStreamBitDepth(videoStream, codecCtx);
-    AVPixelFormat sourceFormat = static_cast<AVPixelFormat>(videoStream->codecpar->format);
-    
-    // Allow FFmpeg to spin multiple worker threads for decode if possible.
+    // Allow FFmpeg internal threading if it wants (this does not change your bounded queue)
     unsigned int hwThreads = std::thread::hardware_concurrency();
     codecCtx->thread_count = hwThreads > 0 ? static_cast<int>(hwThreads) : 0;
     codecCtx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
 
-    if (avcodec_open2(codecCtx, codec, nullptr) < 0)
-    {
-        std::cerr << "[Video] Failed to open codec." << std::endl;
+    if (avcodec_open2(codecCtx, codec, nullptr) < 0) {
+        throw std::runtime_error("[Video] Failed to open codec.");
     }
 
-    width = codecCtx->width;
-    height = codecCtx->height;
+    width  = static_cast<uint32_t>(codecCtx->width);
+    height = static_cast<uint32_t>(codecCtx->height);
+
     frame = av_frame_alloc();
     packet = av_packet_alloc();
-    if (!frame || !packet)
-    {
-        std::cerr << "[Video] Failed to allocate FFmpeg structures." << std::endl;
+    if (!frame || !packet) {
+        throw std::runtime_error("[Video] Failed to allocate AVFrame/AVPacket.");
     }
 
-    streamTimeBase = videoStream->time_base;
-    fallbackPtsSeconds = 0.0;
-    framesDecoded = 0;
-    colorSpace = codecCtx->colorspace;
-    colorRange = codecCtx->color_range;
-
-    if (!configureFormatForPixelFormat(codecCtx->pix_fmt))
-    {
-        std::cerr << "[Video] Unsupported pixel format for DecoderVulkan: "
-                  << pixelFormatDescription(codecCtx->pix_fmt) << std::endl;
-    }
-
-    if (debugLogging)
-    {
-        std::cout << "[Video] Stream pixel format: " << pixelFormatDescription(sourcePixelFormat)
-                  << " -> outputFormat=" << static_cast<int>(outputFormat)
-                  << " chromaDiv=" << chromaDivX << "x" << chromaDivY
-                  << " bytesPerComponent=" << bytesPerComponent
-                  << " bitDepth=" << bitDepth
-                  << " swapUV=" << (swapChromaUV ? "yes" : "no")
-                  << " colorSpace=" << colorSpaceName(colorSpace)
-                  << " colorRange=" << colorRangeName(colorRange)
-                  << " implementation=" << implementationName
-                  << std::endl;
-    }
-
-    AVRational frameRate = av_guess_frame_rate(formatCtx, videoStream, nullptr);
-    fps = (frameRate.num != 0 && frameRate.den != 0) ? av_q2d(frameRate) : 30.0;
+    // FPS + duration
+    AVRational fr = av_guess_frame_rate(formatCtx, videoStream, nullptr);
+    fps = (fr.num && fr.den) ? av_q2d(fr) : 30.0;
     fps = fps > 0.0 ? fps : 30.0;
 
-    if (debugLogging)
-    {
-        std::cout << "[Video] Using " << implementationName;
-        std::cout << " (hw " << pixelFormatDescription(hwPixelFormat) << ")";
-        if (requestedSwPixelFormat != AV_PIX_FMT_NONE)
-        {
-            std::cout << " -> sw " << pixelFormatDescription(requestedSwPixelFormat);
-        }
-        std::cout << ")";
-        std::cout << " DecoderVulkan" << std::endl;
-    }
-
-    // Calculate duration
     durationSeconds = 0.0;
-    if (formatCtx && formatCtx->duration > 0)
-    {
+    if (formatCtx->duration > 0) {
         durationSeconds = static_cast<double>(formatCtx->duration) / static_cast<double>(AV_TIME_BASE);
     }
 
-    // Initialize video resources
-    sampler = VK_NULL_HANDLE;
-    externalLumaView = VK_NULL_HANDLE;
-    externalChromaView = VK_NULL_HANDLE;
-    usingExternal = false;
-
-}
-
-
-// Determine stream bit depth
-int determineStreamBitDepth(AVStream *stream, AVCodecContext *codecCtx)
-{
-    if (stream && stream->codecpar)
-    {
-        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(stream->codecpar->format));
-        if (desc)
-            return desc->comp[0].depth;
+    // Pixel format config
+    if (!configureFormatForPixelFormat(codecCtx->sw_pix_fmt)) {
+        throw std::runtime_error("[Video] Unsupported pixel format: " +
+                                 pixelFormatDescription(codecCtx->sw_pix_fmt));
     }
-    return 8;
+
+    return true;
 }
 
-// Configure format for pixel format
-bool DecoderVulkan::configureFormatForPixelFormat(AVPixelFormat pix_fmt)
+bool DecoderVulkan::initFFmpegVulkanDevice()
 {
-    sourcePixelFormat = pix_fmt;
-    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(pix_fmt);
-    if (!desc)
+    if (!engine) {
+        hardwareInitFailureReason = "Engine2D is null (no Vulkan device available)";
         return false;
-
-    planarYuv = !(desc->flags & AV_PIX_FMT_FLAG_PLANAR) ? false : true;
-    chromaInterleaved = (desc->flags & AV_PIX_FMT_FLAG_PLANAR) ? false : true;
-
-    // Set chroma subsampling
-    chromaDivX = 1 << desc->log2_chroma_w;
-    chromaDivY = 1 << desc->log2_chroma_h;
-    chromaWidth = std::max<uint32_t>(1u, static_cast<uint32_t>((width + chromaDivX - 1) / chromaDivX));
-    chromaHeight = std::max<uint32_t>(1u, static_cast<uint32_t>((height + chromaDivY - 1) / chromaDivY));
-
-    // Determine format
-    if (pix_fmt == AV_PIX_FMT_NV12 || pix_fmt == AV_PIX_FMT_NV21)
-    {
-        outputFormat = PrimitiveYuvFormat::NV12;
-        swapChromaUV = (pix_fmt == AV_PIX_FMT_NV21);
-    }
-    else if (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 1)
-    {
-        outputFormat = PrimitiveYuvFormat::Planar420;
-    }
-    else if (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 0)
-    {
-        outputFormat = PrimitiveYuvFormat::Planar422;
-    }
-    else if (desc->log2_chroma_w == 0 && desc->log2_chroma_h == 0)
-    {
-        outputFormat = PrimitiveYuvFormat::Planar444;
-    }
-    else
-    {
-        outputFormat = PrimitiveYuvFormat::None;
     }
 
-    // Set bit depth and component size
-    bitDepth = desc->comp[0].depth;
-    bytesPerComponent = (bitDepth > 8) ? 2 : 1;
-
-    // Calculate plane sizes
-    if (outputFormat == PrimitiveYuvFormat::NV12)
-    {
-        yPlaneBytes = width * height * bytesPerComponent;
-        uvPlaneBytes = chromaWidth * chromaHeight * 2 * bytesPerComponent;
-    }
-    else
-    {
-        yPlaneBytes = width * height * bytesPerComponent;
-        uvPlaneBytes = chromaWidth * chromaHeight * 2 * bytesPerComponent;
+    hwDeviceCtx = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
+    if (!hwDeviceCtx) {
+        hardwareInitFailureReason = "Failed to allocate Vulkan hwdevice context";
+        return false;
     }
 
-    bufferSize = static_cast<int>(yPlaneBytes + uvPlaneBytes);
+    AVHWDeviceContext* deviceCtx = reinterpret_cast<AVHWDeviceContext*>(hwDeviceCtx->data);
+    AVVulkanDeviceContext* vkctx = static_cast<AVVulkanDeviceContext*>(deviceCtx->hwctx);
+    std::memset(vkctx, 0, sizeof(*vkctx));
 
-    return outputFormat != PrimitiveYuvFormat::None;
+    vkctx->inst = engine->instance;
+    vkctx->phys_dev = engine->physicalDevice;
+    vkctx->act_dev = engine->logicalDevice;
+    vkctx->get_proc_addr = vkGetInstanceProcAddr;
+
+    // Deprecated fields (kept for compatibility with some FFmpeg versions/builds)
+    vkctx->queue_family_index = engine->graphicsQueueFamilyIndex;
+    vkctx->nb_graphics_queues = 1;
+
+    vkctx->queue_family_tx_index = engine->graphicsQueueFamilyIndex;
+    vkctx->nb_tx_queues = 1;
+
+    vkctx->queue_family_comp_index = engine->graphicsQueueFamilyIndex;
+    vkctx->nb_comp_queues = 1;
+
+    vkctx->queue_family_decode_index = engine->videoQueueFamilyIndex;
+    vkctx->nb_decode_queues = 1;
+
+    vkctx->queue_family_encode_index = -1;
+    vkctx->nb_encode_queues = 0;
+
+    // New API queue-family list
+    int q = 0;
+    vkctx->qf[q].idx = engine->graphicsQueueFamilyIndex;
+    vkctx->qf[q].num = 1;
+    vkctx->qf[q].flags = static_cast<VkQueueFlagBits>(VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT);
+    vkctx->qf[q].video_caps = static_cast<VkVideoCodecOperationFlagBitsKHR>(0);
+    q++;
+
+    vkctx->qf[q].idx = engine->videoQueueFamilyIndex;
+    vkctx->qf[q].num = 1;
+    vkctx->qf[q].flags = static_cast<VkQueueFlagBits>(VK_QUEUE_TRANSFER_BIT | VK_QUEUE_VIDEO_DECODE_BIT_KHR);
+    vkctx->qf[q].video_caps = static_cast<VkVideoCodecOperationFlagBitsKHR>(
+        VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR |
+        VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR);
+    q++;
+
+    // Some FFmpeg builds expect these “extra” entries even if they duplicate graphics
+    vkctx->qf[q].idx = engine->graphicsQueueFamilyIndex;
+    vkctx->qf[q].num = 1;
+    vkctx->qf[q].flags = static_cast<VkQueueFlagBits>(VK_QUEUE_TRANSFER_BIT);
+    vkctx->qf[q].video_caps = static_cast<VkVideoCodecOperationFlagBitsKHR>(0);
+    q++;
+
+    vkctx->qf[q].idx = engine->graphicsQueueFamilyIndex;
+    vkctx->qf[q].num = 1;
+    vkctx->qf[q].flags = static_cast<VkQueueFlagBits>(VK_QUEUE_COMPUTE_BIT);
+    vkctx->qf[q].video_caps = static_cast<VkVideoCodecOperationFlagBitsKHR>(0);
+    q++;
+
+    vkctx->nb_qf = q;
+
+    // Let FFmpeg manage queue locking internally
+    vkctx->lock_queue = nullptr;
+    vkctx->unlock_queue = nullptr;
+
+    // Extensions: use what you had (adjust if your environment differs)
+    static const char* instanceExts[] = { "VK_KHR_surface", "VK_KHR_xcb_surface" };
+    static const char* deviceExts[] = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+        VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+
+        VK_KHR_VIDEO_QUEUE_EXTENSION_NAME,
+        VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME,
+        VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME,
+        VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME,
+
+        // optional / nice-to-have depending on your driver/build:
+        VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+        VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
+        VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
+        VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+        VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME,
+        VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME,
+        VK_EXT_SHADER_OBJECT_EXTENSION_NAME,
+    };
+
+    vkctx->enabled_inst_extensions = instanceExts;
+    vkctx->nb_enabled_inst_extensions = 2;
+
+    vkctx->enabled_dev_extensions = deviceExts;
+    vkctx->nb_enabled_dev_extensions = static_cast<int>(sizeof(deviceExts) / sizeof(deviceExts[0]));
+
+    // Features
+    VkPhysicalDeviceFeatures2 features2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+    vkGetPhysicalDeviceFeatures(engine->physicalDevice, &features2.features);
+    vkctx->device_features = features2;
+
+    const int ret = av_hwdevice_ctx_init(hwDeviceCtx);
+    if (ret < 0) {
+        hardwareInitFailureReason = "av_hwdevice_ctx_init(Vulkan) failed: " + avErrStr(ret);
+        av_buffer_unref(&hwDeviceCtx);
+        hwDeviceCtx = nullptr;
+        return false;
+    }
+
+    codecCtx->hw_device_ctx = av_buffer_ref(hwDeviceCtx);
+    return true;
 }
 
-// Destructor
-DecoderVulkan::~DecoderVulkan()
+void DecoderVulkan::cleanupFFmpeg()
 {
-    stopAsyncDecoding();
-    if (packet)
-    {
-        av_packet_free(&packet);
-    }
-    if (frame)
-    {
-        av_frame_free(&frame);
-    }
-    if (hwDeviceCtx)
-    {
+    if (packet) av_packet_free(&packet);
+    if (frame) av_frame_free(&frame);
+
+    if (hwDeviceCtx) {
         av_buffer_unref(&hwDeviceCtx);
         hwDeviceCtx = nullptr;
     }
-    if (codecCtx)
-    {
-        avcodec_free_context(&codecCtx);
+
+    if (codecCtx) avcodec_free_context(&codecCtx);
+    if (formatCtx) avformat_close_input(&formatCtx);
+}
+
+bool DecoderVulkan::configureFormatForPixelFormat(AVPixelFormat pix_fmt)
+{
+    sourcePixelFormat = pix_fmt;
+
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pix_fmt);
+    if (!desc) return false;
+
+    chromaDivX = 1u << desc->log2_chroma_w;
+    chromaDivY = 1u << desc->log2_chroma_h;
+
+    chromaWidth  = std::max<uint32_t>(1u, (width  + chromaDivX - 1) / chromaDivX);
+    chromaHeight = std::max<uint32_t>(1u, (height + chromaDivY - 1) / chromaDivY);
+
+    // Remove dependence on PrimitiveYuvFormat:
+    // We only keep what the downstream needs.
+    bool supported = false;
+    swapChromaUV = false;
+
+    if (pix_fmt == AV_PIX_FMT_NV12) {
+        supported = true;
+        swapChromaUV = false;
     }
-    if (formatCtx)
-    {
-        avformat_close_input(&formatCtx);
+    else if (pix_fmt == AV_PIX_FMT_NV21) {
+        supported = true;
+        swapChromaUV = true;
+    }
+    else {
+        // Accept common planar subsampling shapes if you later add planar support.
+        // If your pipeline is strictly NV12/NV21-only, change this to supported=false.
+        const bool is420 = (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 1);
+        const bool is422 = (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 0);
+        const bool is444 = (desc->log2_chroma_w == 0 && desc->log2_chroma_h == 0);
+        supported = (is420 || is422 || is444);
     }
 
-    // Cleanup Vulkan resources
-    if (engine)
-    {
-        destroyExternalVideoViews();
-        if (sampler != VK_NULL_HANDLE)
-        {
-            vkDestroySampler(engine->logicalDevice, sampler, nullptr);
-            sampler = VK_NULL_HANDLE;
+    bitDepth = desc->comp[0].depth;
+    bytesPerComponent = (bitDepth > 8) ? 2 : 1;
+
+    return supported;
+}
+
+// ------------------------------
+// Async decode (producer)
+// ------------------------------
+bool DecoderVulkan::startAsyncDecoding()
+{
+    if (asyncDecoding) return true;
+
+    stopRequested.store(false);
+    threadRunning.store(true);
+    finished.store(false);
+    draining.store(false);
+
+    decodedQ.reset();
+    candidate.reset();
+
+    asyncDecoding = true;
+    decodeThread = std::thread(&DecoderVulkan::asyncDecodeLoop, this);
+    return true;
+}
+
+void DecoderVulkan::stopAsyncDecoding()
+{
+    if (!asyncDecoding) return;
+
+    stopRequested.store(true);
+    decodedQ.stop();
+
+    if (decodeThread.joinable())
+        decodeThread.join();
+
+    asyncDecoding = false;
+    threadRunning.store(false);
+
+    decodedQ.reset();
+    candidate.reset();
+}
+
+void DecoderVulkan::asyncDecodeLoop()
+{
+    try {
+        while (!stopRequested.load()) {
+            DecodedFrame f;
+            if (!decodeNextFrame(f)) break;
+
+            // seek-drop logic
+            const int64_t target = seekTargetMicroseconds.load();
+            if (target >= 0) {
+                const int64_t micros = static_cast<int64_t>(f.ptsSeconds * 1'000'000.0);
+                if (micros < target) {
+                    continue; // drop
+                }
+                seekTargetMicroseconds.store(-1);
+            }
+
+            if (!f.vk.validate()) {
+                throw std::runtime_error("[Video] decoded frame missing/invalid Vulkan surface");
+            }
+
+            if (!decodedQ.push(std::move(f))) {
+                break; // stopped
+            }
         }
+    } catch (const std::exception& e) {
+        std::cerr << "[Video] asyncDecodeLoop exception: " << e.what() << std::endl;
+    }
+
+    threadRunning.store(false);
+    decodedQ.stop(); // wake consumer if blocking
+}
+
+// ------------------------------
+// Decode one frame (keeps AVFrame alive in DecodedFrame)
+// ------------------------------
+bool DecoderVulkan::decodeNextFrame(DecodedFrame& out)
+{
+    if (finished.load()) return false;
+
+    while (true) {
+        if (!draining.load()) {
+            const int rr = av_read_frame(formatCtx, packet);
+            if (rr >= 0) {
+                if (packet->stream_index == videoStreamIndex) {
+                    const int sp = avcodec_send_packet(codecCtx, packet);
+                    if (sp < 0) {
+                        av_packet_unref(packet);
+                        throw std::runtime_error("[Video] avcodec_send_packet failed: " + avErrStr(sp));
+                    }
+                }
+                av_packet_unref(packet);
+            } else {
+                av_packet_unref(packet);
+                draining.store(true);
+                avcodec_send_packet(codecCtx, nullptr);
+            }
+        }
+
+        const int rf = avcodec_receive_frame(codecCtx, frame);
+
+        if (rf == 0) {
+            const AVPixelFormat frameFmt = static_cast<AVPixelFormat>(frame->format);
+
+            // If dimensions / format change midstream, update config
+            if (width != static_cast<uint32_t>(frame->width) ||
+                height != static_cast<uint32_t>(frame->height) ||
+                frameFmt != sourcePixelFormat)
+            {
+                width  = static_cast<uint32_t>(frame->width);
+                height = static_cast<uint32_t>(frame->height);
+                if (!configureFormatForPixelFormat(frameFmt)) {
+                    av_frame_unref(frame);
+                    throw std::runtime_error("[Video] Unsupported pixel format during decode: " +
+                                             pixelFormatDescription(frameFmt));
+                }
+            }
+
+            // We need to keep the frame alive for zero-copy
+            out.reset();
+            out.avFrame = av_frame_clone(frame);
+            if (!out.avFrame) {
+                av_frame_unref(frame);
+                throw std::runtime_error("[Video] av_frame_clone failed");
+            }
+
+            // Extract Vulkan surface metadata
+            if (out.avFrame->format != AV_PIX_FMT_VULKAN) {
+                av_frame_unref(frame);
+                throw std::runtime_error("[Video] Decoder did not output AV_PIX_FMT_VULKAN");
+            }
+
+            const AVVkFrame* vkf = reinterpret_cast<const AVVkFrame*>(out.avFrame->data[0]);
+            if (!vkf) {
+                av_frame_unref(frame);
+                throw std::runtime_error("[Video] AVVkFrame is null");
+            }
+
+            out.vk.valid = true;
+            out.vk.width  = static_cast<uint32_t>(out.avFrame->width);
+            out.vk.height = static_cast<uint32_t>(out.avFrame->height);
+
+            // Determine planes from provided VkImage array
+            int nb_images = 0;
+            while (nb_images < AV_NUM_DATA_POINTERS && vkf->img[nb_images]) nb_images++;
+            out.vk.planes = std::min<uint32_t>(static_cast<uint32_t>(std::max(nb_images, 0)), 2u);
+
+            // Try to infer plane formats based on sw_pix_fmt
+            const VkFormat* vkFormats = av_vkfmt_from_pixfmt(codecCtx->sw_pix_fmt);
+
+            for (uint32_t i = 0; i < out.vk.planes; ++i) {
+                out.vk.images[i] = vkf->img[i];
+                out.vk.layouts[i] = vkf->layout[i];
+                out.vk.semaphores[i] = vkf->sem[i];
+                out.vk.semaphoreValues[i] = vkf->sem_value[i];
+                out.vk.queueFamily[i] = vkf->queue_family[i];
+                out.vk.planeFormats[i] = vkFormats ? vkFormats[i] : VK_FORMAT_UNDEFINED;
+            }
+
+            // Compute PTS seconds
+            double ptsSeconds = fallbackPtsSeconds;
+            const int64_t bestTs = out.avFrame->best_effort_timestamp;
+            if (bestTs != AV_NOPTS_VALUE) {
+                const double tb = (streamTimeBase.den != 0)
+                    ? (static_cast<double>(streamTimeBase.num) / static_cast<double>(streamTimeBase.den))
+                    : 0.0;
+                ptsSeconds = tb * static_cast<double>(bestTs);
+            } else {
+                const double frameDuration = fps > 0.0 ? (1.0 / fps) : (1.0 / 30.0);
+                ptsSeconds = framesDecoded > 0 ? (fallbackPtsSeconds + frameDuration) : 0.0;
+            }
+
+            fallbackPtsSeconds = ptsSeconds;
+            framesDecoded++;
+            out.ptsSeconds = ptsSeconds;
+
+            av_frame_unref(frame);
+            return true;
+        }
+
+        if (rf == AVERROR(EAGAIN)) {
+            continue;
+        }
+
+        if (rf == AVERROR_EOF) {
+            finished.store(true);
+            return false;
+        }
+
+        std::cerr << "[Video] avcodec_receive_frame error: " << avErrStr(rf)
+                  << " (" << rf << ")\n";
+        return false;
     }
 }
 
-VkSampler DecoderVulkan::createLinearClampSampler(Engine2D *engine)
+// ------------------------------
+// Vulkan helpers
+// ------------------------------
+VkSampler DecoderVulkan::createLinearClampSampler()
 {
-    if (!engine)
-        return VK_NULL_HANDLE;
+    if (!engine) return VK_NULL_HANDLE;
 
-    VkSampler sampler = VK_NULL_HANDLE;
-    VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.anisotropyEnable = VK_TRUE;
-    samplerInfo.maxAnisotropy = 1.0f; // Simplified
-    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    samplerInfo.unnormalizedCoordinates = VK_FALSE;
-    samplerInfo.compareEnable = VK_FALSE;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    VkSampler s = VK_NULL_HANDLE;
+    VkSamplerCreateInfo ci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+    ci.magFilter = VK_FILTER_LINEAR;
+    ci.minFilter = VK_FILTER_LINEAR;
+    ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    ci.unnormalizedCoordinates = VK_FALSE;
 
-    if (vkCreateSampler(engine->logicalDevice, &samplerInfo, nullptr, &sampler) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Failed to create sampler.");
+    if (vkCreateSampler(engine->logicalDevice, &ci, nullptr, &s) != VK_SUCCESS) {
+        throw std::runtime_error("vkCreateSampler failed");
     }
-    return sampler;
+    return s;
 }
 
 void DecoderVulkan::destroyExternalVideoViews()
 {
-    if (!engine)
-    {
-        return;
-    }
-    if (externalLumaView != VK_NULL_HANDLE)
-    {
+    if (!engine) return;
+
+    if (externalLumaView != VK_NULL_HANDLE) {
         vkDestroyImageView(engine->logicalDevice, externalLumaView, nullptr);
         externalLumaView = VK_NULL_HANDLE;
     }
-    if (externalChromaView != VK_NULL_HANDLE)
-    {
+    if (externalChromaView != VK_NULL_HANDLE) {
         vkDestroyImageView(engine->logicalDevice, externalChromaView, nullptr);
         externalChromaView = VK_NULL_HANDLE;
     }
     usingExternal = false;
 }
 
-
-bool DecoderVulkan::seek(float timeSeconds)
+VkImageView DecoderVulkan::createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspect)
 {
-    if (!formatCtx)
-    {
-        return false;
+    if (!engine) return VK_NULL_HANDLE;
+
+    VkImageViewCreateInfo vi{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    vi.image = image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = format;
+    vi.subresourceRange.aspectMask = aspect;
+    vi.subresourceRange.baseMipLevel = 0;
+    vi.subresourceRange.levelCount = 1;
+    vi.subresourceRange.baseArrayLayer = 0;
+    vi.subresourceRange.layerCount = 1;
+
+    VkImageView view = VK_NULL_HANDLE;
+    if (vkCreateImageView(engine->logicalDevice, &vi, nullptr, &view) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
     }
-
-    timeSeconds = std::clamp(timeSeconds, 0.0f, static_cast<float>(durationSeconds));
-    currentTimeSeconds = timeSeconds;
-
-    stopAsyncDecoding();
-    
-    if (!formatCtx || !codecCtx)
-    {
-        return false;
-    }
-
-    // Clear any stale frames before performing the seek.
-    {
-        std::lock_guard<std::mutex> lock(frameMutex);
-        frameQueue.clear();
-    }
-
-    // For async DecoderVulkans, we need to stop the background thread, seek, then restart.
-    bool wasAsync = asyncDecoding;
-    if (wasAsync)
-    {
-        stopAsyncDecoding();
-    }
-
-    std::cout << "[Video] Seeking to " << timeSeconds << "s..." << std::endl;
-    seekTargetMicroseconds.store(static_cast<int64_t>(timeSeconds * 1000000.0));
-
-    // Convert target seconds to the stream's timebase
-    AVStream *videoStream = formatCtx->streams[videoStreamIndex];
-    const int64_t targetTimestamp =
-        av_rescale_q(static_cast<int64_t>(timeSeconds * AV_TIME_BASE),
-                     AV_TIME_BASE_Q,
-                     videoStream->time_base);
-
-    // Seek to the nearest keyframe before the target timestamp
-    int ret = avformat_seek_file(formatCtx,
-                                 videoStreamIndex,
-                                 std::numeric_limits<int64_t>::min(),
-                                 targetTimestamp,
-                                 targetTimestamp,
-                                 AVSEEK_FLAG_BACKWARD);
-    if (ret < 0)
-    {
-        std::cerr << "[Video] Failed to seek: " << ffmpegErrorString(ret) << std::endl;
-        seekTargetMicroseconds.store(-1);
-        // Even if seek fails, we might need to restart the async thread
-        if (wasAsync)
-        {
-            startAsyncDecoding(maxBufferedFrames);
-        }
-        return false;
-    }
-
-    // Flush the DecoderVulkan buffers
-    avcodec_flush_buffers(codecCtx);
-    avformat_flush(formatCtx);
-
-    // Reset DecoderVulkan state
-    finished.store(false);
-    draining = false;
-    fallbackPtsSeconds = timeSeconds;
-    framesDecoded = 0;
-
-    // Restart async decoding if it was active
-    if (wasAsync)
-    {
-        if (!startAsyncDecoding(maxBufferedFrames))
-        {
-            std::cerr << "[Video] Failed to restart async decoding after seek." << std::endl;
-            return false;
-        }
-    }
-
-    return true;
-
-    if (engine)
-    {
-        vkDeviceWaitIdle(engine->logicalDevice);
-    }
-
-    pendingFrames.clear();
-    playbackClockInitialized = false;
-
-    return startAsyncDecoding(12);
+    return view;
 }
 
-bool DecoderVulkan::decodeNextFrame(DecodedFrame &decodedFrame)
+bool DecoderVulkan::waitForVulkanFrameReady(const VulkanSurface& s)
 {
-    if (finished.load())
-    {
-        return false;
+    if (!engine) return false;
+    if (!s.validate()) return false;
+
+    // Collect timeline semaphores
+    std::vector<VkSemaphore> sems;
+    std::vector<uint64_t> vals;
+    sems.reserve(s.planes);
+    vals.reserve(s.planes);
+
+    for (uint32_t i = 0; i < s.planes; ++i) {
+        if (s.semaphores[i] != VK_NULL_HANDLE) {
+            sems.push_back(s.semaphores[i]);
+            vals.push_back(s.semaphoreValues[i]);
+        }
     }
 
-    static int callCount = 0;
-    callCount++;
-    auto decodeStart = std::chrono::steady_clock::now();
+    if (sems.empty()) return true;
 
-    while (true)
-    {
-        if (!draining)
-        {
-            auto readStart = std::chrono::steady_clock::now();
-            int readResult = av_read_frame(formatCtx, packet);
-            auto readEnd = std::chrono::steady_clock::now();
+    VkSemaphoreWaitInfo wi{ VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+    wi.semaphoreCount = static_cast<uint32_t>(sems.size());
+    wi.pSemaphores = sems.data();
+    wi.pValues = vals.data();
 
-            if (readResult >= 0)
-            {
-                if (packet->stream_index == videoStreamIndex)
-                {
-                    if (avcodec_send_packet(codecCtx, packet) < 0)
-                    {
-                        std::cerr << "[Video] Failed to send packet to DecoderVulkan" << std::endl;
-                    }
-                }
-                av_packet_unref(packet);
-            }
-            else
-            {
-                av_packet_unref(packet);
-                draining = true;
-                avcodec_send_packet(codecCtx, nullptr);
-            }
-        }
+    return vkWaitSemaphores(engine->logicalDevice, &wi, UINT64_MAX) == VK_SUCCESS;
+}
 
-        int receiveResult = avcodec_receive_frame(codecCtx, frame);
+bool DecoderVulkan::createExternalViewsFromSurface(const VulkanSurface& s)
+{
+    if (!engine) return false;
+    if (!s.validate()) return false;
 
-        if (receiveResult == 0)
-        {
-            std::cout << "[Video] Received frame: width=" << frame->width << " height=" << frame->height
-                      << " format=" << frame->format << " (" << pixelFormatDescription(static_cast<AVPixelFormat>(frame->format)) << ")"
-                      << " data[0]=" << (void*)frame->data[0] << " linesize[0]=" << frame->linesize[0] << std::endl;
+    // Note: views are device objects; safe to recreate each frame
+    destroyExternalVideoViews();
 
-                      
-            const bool isHardwareVulkan =
-                hwDeviceType == AV_HWDEVICE_TYPE_VULKAN &&
-                frame->format == AV_PIX_FMT_VULKAN;
+    // Heuristic: plane 0 (luma) uses COLOR aspect.
+    // Plane formats should be provided by av_vkfmt_from_pixfmt() when available.
+    VkFormat f0 = s.planeFormats[0] != VK_FORMAT_UNDEFINED ? s.planeFormats[0] : VK_FORMAT_R8_UNORM;
+    externalLumaView = createImageView(s.images[0], f0, VK_IMAGE_ASPECT_COLOR_BIT);
 
-            const AVPixelFormat frameFormat = static_cast<AVPixelFormat>(frame->format);
+    if (s.planes > 1) {
+        VkFormat f1 = s.planeFormats[1] != VK_FORMAT_UNDEFINED ? s.planeFormats[1] : VK_FORMAT_R8G8_UNORM;
+        externalChromaView = createImageView(s.images[1], f1, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
 
-            const AVFrame *ptsFrame = frame;
+    usingExternal =
+        (externalLumaView != VK_NULL_HANDLE) &&
+        (s.planes == 1 || externalChromaView != VK_NULL_HANDLE);
 
-            // Update DecoderVulkan dimensions/pixel format even if we skip buffer copy
-            if (width != frame->width || height != frame->height ||
-                frameFormat != sourcePixelFormat)
-            {
-                width = frame->width;
-                height = frame->height;
-                if (!configureFormatForPixelFormat(frameFormat))
-                {
-                    std::cerr << "[Video] Unsupported pixel format during decode: "
-                              << pixelFormatDescription(frameFormat) << std::endl;
-                    return false;
-                }
+    return usingExternal;
+}
 
-                std::cout << "[Video] DecoderVulkan output pixel format changed to "
-                          << pixelFormatDescription(frameFormat) << std::endl;
-            }
+// ------------------------------
+// Playback timing (consumer owns FPS)
+// ------------------------------
+void DecoderVulkan::resetPlaybackClock()
+{
+    clockInitialized = false;
+    firstPtsSeconds = 0.0;
+    lastFramePtsSeconds = 0.0;
+    lastDisplayedSeconds = 0.0;
+    candidate.reset();
+}
 
-            buffer.clear();
+void DecoderVulkan::updatePlaybackTimestamps(const DecodedFrame& frame, std::chrono::steady_clock::time_point now)
+{
+    lastFramePtsSeconds = frame.ptsSeconds;
+    lastFrameRenderWall = now;
+    lastDisplayedSeconds = std::max(0.0, frame.ptsSeconds - firstPtsSeconds);
+}
 
-            // Populate Vulkan surface info for GPU path
-            if (frame->format == AV_PIX_FMT_VULKAN)
-            {
-                const AVVkFrame *vkf = reinterpret_cast<AVVkFrame *>(frame->data[0]);
-                if (vkf)
-                {
-                    vkSurface.valid = true;
-                    vkSurface.width = static_cast<uint32_t>(frame->width);
-                    vkSurface.height = static_cast<uint32_t>(frame->height);
-                    const VkFormat *vkFormats = av_vkfmt_from_pixfmt(codecCtx->sw_pix_fmt);
-                    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(codecCtx->sw_pix_fmt);
-                    uint32_t planes = desc ? desc->nb_components : 0;
-                    planes = std::min<uint32_t>(planes, 2u);
-                    vkSurface.planes = planes;
-                    for (uint32_t i = 0; i < planes; ++i)
-                    {
-                        vkSurface.images[i] = vkf->img[i];
-                        vkSurface.layouts[i] = vkf->layout[i];
-                        vkSurface.semaphores[i] = vkf->sem[i];
-                        vkSurface.semaphoreValues[i] = vkf->sem_value[i];
-                        vkSurface.queueFamily[i] = vkf->queue_family[i];
-                        vkSurface.planeFormats[i] = vkFormats ? vkFormats[i] : VK_FORMAT_UNDEFINED;
-                    }
-                }
-            }
-            else
-            {
-                std::cerr << "[Video] Non-Vulkan frame format detected: " << frame->format 
-                          << ". Vulkan hardware decoding required." << std::endl;
-                return false;
-            }
+bool DecoderVulkan::shouldDisplayNow(const DecodedFrame& frame, std::chrono::steady_clock::time_point now) const
+{
+    if (!clockInitialized) return true;
 
-            double ptsSeconds = fallbackPtsSeconds;
-            const int64_t bestTimestamp = ptsFrame->best_effort_timestamp;
-            if (bestTimestamp != AV_NOPTS_VALUE)
-            {
-                const double timeBase = streamTimeBase.den != 0
-                                            ? static_cast<double>(streamTimeBase.num) /
-                                                  static_cast<double>(streamTimeBase.den)
-                                            : 0.0;
-                ptsSeconds = timeBase * static_cast<double>(bestTimestamp);
-            }
-            else
-            {
-                const double frameDuration = fps > 0.0 ? (1.0 / fps) : (1.0 / 30.0);
-                ptsSeconds = framesDecoded > 0
-                                 ? fallbackPtsSeconds + frameDuration
-                                 : 0.0;
-            }
-            fallbackPtsSeconds = ptsSeconds;
-            framesDecoded++;
-            ptsSeconds = ptsSeconds;
+    const double ptsOffset = frame.ptsSeconds - firstPtsSeconds;
+    const auto target = playbackStartWall + std::chrono::duration<double>(ptsOffset);
 
-            av_frame_unref(frame);
+    return (now + std::chrono::milliseconds(1) >= target);
+}
 
-            return true;
-        }
-        else if (receiveResult == AVERROR(EAGAIN))
-        {
+void DecoderVulkan::dropLateFrames(std::chrono::steady_clock::time_point now)
+{
+    if (!clockInitialized) return;
+
+    // If we're significantly late, drop frames whose target time already passed.
+    // This keeps "real-time fps" rather than slowing down.
+    while (true) {
+        DecodedFrame tmp;
+        if (!decodedQ.try_pop(tmp)) break;
+
+        const double ptsOffset = tmp.ptsSeconds - firstPtsSeconds;
+        const auto target = playbackStartWall + std::chrono::duration<double>(ptsOffset);
+
+        if (now + std::chrono::milliseconds(1) >= target) {
+            // It's already "in the past" -> drop and keep going
             continue;
-        }
-        else if (receiveResult == AVERROR_EOF)
-        {
-            finished.store(true);
-            return false;
-        }
-        else
-        {
-            std::cerr << "[Video] DecoderVulkan error: " << ffmpegErrorString(receiveResult) << std::endl;
-            return false;
-        }
-    }
-}
-
-void DecoderVulkan::asyncDecodeLoop()
-{
-    std::cout << "[Video] asyncDecodeLoop started" << std::endl;
-
-    DecodedFrame localFrame;
-    localFrame.buffer.reserve(bufferSize);
-    int frameCount = 0;
-
-    while (!stopRequested.load())
-    {
-        frameCount++;
-        bool decodeSuccess = decodeNextFrame(localFrame);
-
-        if (!decodeSuccess)
-        {
-            std::cout << "[Video] asyncDecodeLoop: decodeNextFrame returned false at frame "
-                      << frameCount << ", finished=" << finished.load() << std::endl;
+        } else {
+            // This one is in the future; keep as candidate
+            candidate = std::move(tmp);
             break;
         }
-
-        int64_t currentSeekTarget = seekTargetMicroseconds.load();
-        if (currentSeekTarget >= 0)
-        {
-            const int64_t frameMicros = static_cast<int64_t>(localFrame.ptsSeconds * 1000000.0);
-            if (frameMicros < currentSeekTarget)
-            {
-                // Drop frames prior to the seek target
-                continue;
-            }
-            if (frameMicros >= currentSeekTarget)
-            {
-                seekTargetMicroseconds.store(-1);
-                std::cout << "[Video] Seek target reached." << std::endl;
-            }
-        }
-
-        if (frameCount % 30 == 0)
-        {
-            std::cout << "[Video] asyncDecodeLoop: decoded frame " << frameCount
-                      << ", pts=" << localFrame.ptsSeconds << "s" << std::endl;
-        }
-
-        std::unique_lock<std::mutex> lock(frameMutex);
-        frameCond.wait(lock, [this]()
-                       { return stopRequested.load() || frameQueue.size() < maxBufferedFrames; });
-
-        if (stopRequested.load())
-        {
-            std::cout << "[Video] asyncDecodeLoop: stopRequested detected, breaking loop at frame "
-                      << frameCount << std::endl;
-            break;
-        }
-
-        // Verify we have a valid Vulkan surface
-        if (!localFrame.vkSurface.valid)
-        {
-            std::cerr << "[Video] Zero-copy Vulkan frame missing Vulkan surface." << std::endl;
-            break;
-        }
-
-        frameQueue.emplace_back(std::move(localFrame));
-        lock.unlock();
-        frameCond.notify_all();
-        localFrame = DecodedFrame{};
-        localFrame.buffer.reserve(bufferSize);
-    }
-
-    std::cout << "[Video] asyncDecodeLoop exiting after " << frameCount << " frames" << std::endl;
-
-    threadRunning.store(false);
-    frameCond.notify_all();
-}
-
-bool DecoderVulkan::startAsyncDecoding(size_t maxBufferedFrames)
-{
-    if (asyncDecoding)
-    {
-        return true;
-    }
-
-    this->maxBufferedFrames = std::max<size_t>(1, maxBufferedFrames);
-    stopRequested.store(false);
-    threadRunning.store(true);
-    asyncDecoding = true;
-    frameQueue.clear();
-
-    try
-    {
-        decodeThread = std::thread(&DecoderVulkan::asyncDecodeLoop, this);
-    }
-    catch (const std::system_error &err)
-    {
-        std::cerr << "[Video] Failed to start decode thread: " << err.what() << std::endl;
-        threadRunning.store(false);
-        asyncDecoding = false;
-        return false;
-    }
-
-    return true;
-}
-
-bool DecoderVulkan::acquireDecodedFrame(DecodedFrame &outFrame)
-{
-    std::unique_lock<std::mutex> lock(frameMutex);
-    if (frameQueue.empty())
-    {
-        return false;
-    }
-
-    outFrame = std::move(frameQueue.front());
-    frameQueue.pop_front();
-    lock.unlock();
-    frameCond.notify_all();
-    return true;
-}
-
-void DecoderVulkan::stopAsyncDecoding()
-{
-    std::cout << "[Video] stopAsyncDecoding called" << std::endl;
-
-    if (!asyncDecoding)
-    {
-        return;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(frameMutex);
-        stopRequested.store(true);
-        std::cout << "[Video] stopAsyncDecoding: set stopRequested=true, frameQueue size="
-                  << frameQueue.size() << std::endl;
-    }
-    frameCond.notify_all();
-
-    if (decodeThread.joinable())
-    {
-        std::cout << "[Video] stopAsyncDecoding: joining decode thread..." << std::endl;
-        decodeThread.join();
-        std::cout << "[Video] stopAsyncDecoding: decode thread joined" << std::endl;
-    }
-
-    frameQueue.clear();
-    asyncDecoding = false;
-    threadRunning.store(false);
-    stopRequested.store(false);
-}
-
-bool DecoderVulkan::waitForVulkanFrameReady(Engine2D *engine, const DecodedFrame::VulkanSurface &surface)
-{
-    if (!engine || !surface.valid)
-    {
-        return false;
-    }
-
-    std::vector<VkSemaphore> semaphores;
-    std::vector<uint64_t> values;
-    for (uint32_t i = 0; i < surface.planes; ++i)
-    {
-        if (surface.semaphores[i] != VK_NULL_HANDLE)
-        {
-            semaphores.push_back(surface.semaphores[i]);
-            values.push_back(surface.semaphoreValues[i]);
-        }
-    }
-
-    if (semaphores.empty())
-    {
-        return true;
-    }
-
-    VkSemaphoreWaitInfo waitInfo{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-    waitInfo.semaphoreCount = static_cast<uint32_t>(semaphores.size());
-    waitInfo.pSemaphores = semaphores.data();
-    waitInfo.pValues = values.data();
-    return vkWaitSemaphores(engine->logicalDevice, &waitInfo, UINT64_MAX) == VK_SUCCESS;
-}
-
-void DecoderVulkan::pumpDecodedFrames()
-{
-    constexpr size_t kMaxPendingFrames = 6;
-    DecodedFrame stagingFrame;
-    stagingFrame.buffer.reserve(bufferSize);
-
-    while (pendingFrames.size() < kMaxPendingFrames &&
-           acquireDecodedFrame(stagingFrame))
-    {
-        pendingFrames.emplace_back(std::move(stagingFrame));
-        stagingFrame = DecodedFrame{};
-        stagingFrame.buffer.reserve(bufferSize);
     }
 }
 
 double DecoderVulkan::advancePlayback()
 {
-    if (sampler == VK_NULL_HANDLE)
-    {
-        return 0.0;
-    }
+    if (!playing) return lastDisplayedSeconds;
 
-    pumpDecodedFrames();
+    auto now = std::chrono::steady_clock::now();
 
-    if (!playing)
-    {
-        return lastDisplayedSeconds;
-    }
-
-    if (pendingFrames.empty())
-    {
-        if (finished.load() && !threadRunning.load())
-        {
-            // End of video reached
+    if (!candidate) {
+        DecodedFrame f;
+        if (!decodedQ.try_pop(f)) {
+            return lastDisplayedSeconds;
         }
-        return lastDisplayedSeconds;
+        candidate = std::move(f);
     }
 
-    auto currentTime = std::chrono::steady_clock::now();
-    auto &nextFrame = pendingFrames.front();
-
-    if (!playbackClockInitialized)
-    {
-        playbackClockInitialized = true;
-        // Keep the visual scrub position continuous across seeks by anchoring the base
-        // to the requested playback time (lastDisplayedSeconds) rather than resetting to zero.
-        basePtsSeconds = nextFrame.ptsSeconds - lastDisplayedSeconds;
-        lastFramePtsSeconds = nextFrame.ptsSeconds;
-        lastFrameRenderTime = currentTime;
+    // Initialize clock on first presented frame
+    if (!clockInitialized) {
+        clockInitialized = true;
+        firstPtsSeconds = candidate->ptsSeconds;
+        playbackStartWall = now;
     }
 
-    double frameDelta = nextFrame.ptsSeconds - lastFramePtsSeconds;
-    if (frameDelta < 1e-6)
+    // If late a lot, drop to catch up
     {
-        frameDelta = 1.0 / std::max(30.0, fps);
-    }
-
-    auto targetTime = lastFrameRenderTime + std::chrono::duration<double>(frameDelta);
-    if (currentTime + std::chrono::milliseconds(1) < targetTime)
-    {
-        return lastDisplayedSeconds;
-    }
-
-    auto frame = std::move(nextFrame);
-    pendingFrames.pop_front();
-
-    
-    if (!engine)
-    {
-        return frame.vkSurface.valid; // allow zero-copy path
-    }
-
-    // Zero-copy Vulkan path: bind decoded images directly
-    if (frame.vkSurface.valid)
-    {
-        // Block until decode completion for this frame
-        if (!waitForVulkanFrameReady(engine, frame.vkSurface))
-        {
-            std::cerr << "[Video2D] Failed waiting for Vulkan decode semaphores." << std::endl;
-            return false;
+        const double ptsOffset = candidate->ptsSeconds - firstPtsSeconds;
+        const auto target = playbackStartWall + std::chrono::duration<double>(ptsOffset);
+        if (now - target > std::chrono::milliseconds(50)) {
+            dropLateFrames(now);
+            if (!candidate) return lastDisplayedSeconds;
         }
-
-        // Destroy previous external views after ensuring GPU is idle to avoid use-after-free
-        vkDeviceWaitIdle(engine->logicalDevice);
-        destroyExternalVideoViews(engine, videoResources);
-
-        auto createView = [&](VkImage image, VkFormat format) -> VkImageView
-        {
-            VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-            viewInfo.image = image;
-            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            viewInfo.format = format;
-            viewInfo.components = {VK_COMPONENT_SWIZZLE_IDENTITY,
-                                   VK_COMPONENT_SWIZZLE_IDENTITY,
-                                   VK_COMPONENT_SWIZZLE_IDENTITY,
-                                   VK_COMPONENT_SWIZZLE_IDENTITY};
-            viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            viewInfo.subresourceRange.baseMipLevel = 0;
-            viewInfo.subresourceRange.levelCount = 1;
-            viewInfo.subresourceRange.baseArrayLayer = 0;
-            viewInfo.subresourceRange.layerCount = 1;
-            VkImageView view = VK_NULL_HANDLE;
-            if (vkCreateImageView(engine->logicalDevice, &viewInfo, nullptr, &view) != VK_SUCCESS)
-            {
-                return VK_NULL_HANDLE;
-            }
-            return view;
-        };
-
-        VkImageView lumaView = VK_NULL_HANDLE;
-        VkImageView chromaView = VK_NULL_HANDLE;
-
-        return true;
     }
 
-    // CPU fallback is not supported
-    std::cerr << "[Video2D] No valid Vulkan surface available. CPU fallback is not supported." << std::endl;
-    return false;
+    if (!shouldDisplayNow(*candidate, now)) {
+        return lastDisplayedSeconds;
+    }
 
-    lastFramePtsSeconds = frame.ptsSeconds;
-    lastFrameRenderTime = currentTime;
-    lastDisplayedSeconds = std::max(0.0, lastFramePtsSeconds - basePtsSeconds);
+    // Present candidate
+    if (engine && candidate->vk.validate()) {
+        if (!waitForVulkanFrameReady(candidate->vk)) {
+            std::cerr << "[Video] vkWaitSemaphores failed\n";
+        } else {
+            createExternalViewsFromSurface(candidate->vk);
+        }
+    }
+
+    updatePlaybackTimestamps(*candidate, now);
+    candidate.reset();
     return lastDisplayedSeconds;
 }
 
-int runDecodeOnlyBenchmark(const std::filesystem::path &videoPath,
-                                    double benchmarkSeconds)
+// ------------------------------
+// Seek
+// ------------------------------
+bool DecoderVulkan::seek(float timeSeconds)
 {
-    const double kBenchmarkSeconds = benchmarkSeconds > 0.0 ? benchmarkSeconds : 5.0;
-    if (!std::filesystem::exists(videoPath))
-    {
-        std::cerr << "[DecodeOnly] Missing video file: " << videoPath << std::endl;
-        return 1;
+    if (!formatCtx || !codecCtx) return false;
+
+    timeSeconds = std::clamp(timeSeconds, 0.0f, static_cast<float>(durationSeconds));
+
+    // Stop thread & clear buffers
+    const bool wasAsync = asyncDecoding;
+    if (wasAsync) stopAsyncDecoding();
+
+    decodedQ.reset();
+    seekTargetMicroseconds.store(static_cast<int64_t>(timeSeconds * 1'000'000.0));
+
+    AVStream* st = formatCtx->streams[videoStreamIndex];
+    const int64_t targetTs =
+        av_rescale_q(static_cast<int64_t>(timeSeconds * AV_TIME_BASE),
+                     AV_TIME_BASE_Q,
+                     st->time_base);
+
+    const int ret = avformat_seek_file(formatCtx,
+                                       videoStreamIndex,
+                                       std::numeric_limits<int64_t>::min(),
+                                       targetTs,
+                                       targetTs,
+                                       AVSEEK_FLAG_BACKWARD);
+    if (ret < 0) {
+        seekTargetMicroseconds.store(-1);
+        if (wasAsync) startAsyncDecoding();
+        throw std::runtime_error("[Video] seek failed: " + avErrStr(ret));
     }
 
-    bool requireGraphicsQueue = false;
+    avcodec_flush_buffers(codecCtx);
+    avformat_flush(formatCtx);
 
-    try
-    {
-        DecoderVulkan DecoderVulkan(videoPath, requireGraphicsQueue);
+    finished.store(false);
+    draining.store(false);
+    framesDecoded = 0;
+    fallbackPtsSeconds = timeSeconds;
 
-        DecodedFrame frame;
-        frame.buffer.reserve(DecoderVulkan.bufferSize);
+    destroyExternalVideoViews();
+    resetPlaybackClock();
 
-        auto start = std::chrono::steady_clock::now();
-        size_t framesDecoded = 0;
-        double firstPts = -1.0;
-        double decodedSeconds = 0.0;
-        while (DecoderVulkan.decodeNextFrame(frame))
-        {
-            framesDecoded++;
-            if (firstPts < 0.0)
-            {
-                firstPts = frame.ptsSeconds;
-            }
-
-            // Stop after decoding the first kBenchmarkSeconds worth of 
-            double elapsedPts = frame.ptsSeconds - (firstPts < 0.0 ? 0.0 : firstPts);
-            decodedSeconds = elapsedPts;
-            if (elapsedPts >= kBenchmarkSeconds)
-            {
-                break;
-            }
-
-            frame.buffer.clear();
-        }
-        auto end = std::chrono::steady_clock::now();
-        double seconds = std::chrono::duration<double>(end - start).count();
-        double fps = seconds > 0.0 ? static_cast<double>(framesDecoded) / seconds : 0.0;
-
-        std::cout << "[DecodeOnly] Decoded "
-                  << framesDecoded << " frames (~" << std::min(decodedSeconds, kBenchmarkSeconds)
-                  << "s of source) in " << seconds << "s -> " << fps << " fps" << std::endl;
-    }
-    catch (const std::exception &e)
-    {
-        std::cerr << "[DecodeOnly] Failed: " << e.what() << std::endl;
-        return 1;
-    }
-
-    return 0;
-}
-
-
-static uint32_t getFrameIndex(double seconds, double fps)
-{
-    if (fps <= 0.0)
-    {
-        return 0;
-    }
-    double value = seconds * fps;
-    if (value <= 0.0)
-    {
-        return 0;
-    }
-    double rounded = std::floor(value + 0.5);
-    if (rounded >= static_cast<double>(std::numeric_limits<uint32_t>::max()))
-    {
-        return std::numeric_limits<uint32_t>::max();
-    }
-    return static_cast<uint32_t>(rounded);
-}
-
-bool saveRawFrameData(const std::filesystem::path &path, const uint8_t *data, size_t size)
-{
-    if (!data || size == 0)
-    {
-        return false;
-    }
-
-    std::ofstream file(path, std::ios::binary);
-    if (!file)
-    {
-        std::cerr << "[motive2d] Failed to open file for writing: " << path << "\n";
-        return false;
-    }
-
-    file.write(reinterpret_cast<const char *>(data), size);
-    if (!file)
-    {
-        std::cerr << "[motive2d] Failed to write frame data to: " << path << "\n";
-        return false;
-    }
-
-    std::cout << "[motive2d] Saved raw frame data (" << size << " bytes) to: " << path << "\n";
+    if (wasAsync) startAsyncDecoding();
     return true;
 }
 
-// Interrupt callback for FFmpeg
+// ------------------------------
+// Benchmark helper (decode-only)
+// ------------------------------
+int runDecodeOnlyBenchmark(const std::filesystem::path &videoPath, double benchmarkSeconds)
+{
+    const double kBenchmarkSeconds = benchmarkSeconds > 0.0 ? benchmarkSeconds : 5.0;
+
+    DecoderVulkan d(videoPath, /*engine*/nullptr);
+    if (!d.valid) {
+        std::cerr << "[DecodeOnly] Decoder invalid: " << d.getHardwareInitFailureReason() << "\n";
+        return 1;
+    }
+
+    DecodedFrame f;
+    auto start = std::chrono::steady_clock::now();
+    size_t frames = 0;
+    double firstPts = -1.0;
+
+    while (d.decodeNextFrame(f)) {
+        frames++;
+        if (firstPts < 0.0) firstPts = f.ptsSeconds;
+        if (f.ptsSeconds - firstPts >= kBenchmarkSeconds) break;
+        f.reset();
+    }
+
+    auto end = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(end - start).count();
+    const double outFps = seconds > 0.0 ? (double)frames / seconds : 0.0;
+
+    std::cout << "[DecodeOnly] Decoded " << frames << " frames in " << seconds
+              << "s -> " << outFps << " fps\n";
+    return 0;
+}
+
+// ------------------------------
+// Interrupt callback
+// ------------------------------
 static int interrupt_callback(void *opaque)
 {
-    DecoderVulkan *DecoderVulkan = static_cast<DecoderVulkan *>(opaque);
-    if (DecoderVulkan && DecoderVulkan->isStopRequested())
-        return 1;
-    return 0;
+    auto* d = static_cast<DecoderVulkan*>(opaque);
+    return (d && d->isStopRequested()) ? 1 : 0;
 }

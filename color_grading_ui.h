@@ -9,8 +9,8 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+#include "color_grading_pass.h"
 #include "image_resource.h"
-#include "color_adjustments.h"
 #include "display2d.h"
 #include "engine2d.h"
 #include "fps.h"
@@ -42,7 +42,6 @@ public:
     ColorGradingUi(Engine2D *engine,
                    const GradingSettings &settings,
                    ImageResource &image,
-                   OverlayImageInfo &info,
                    uint32_t fbWidth,
                    uint32_t fbHeight,
                    SliderLayout &layout,

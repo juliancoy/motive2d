@@ -26,7 +26,6 @@
 #include "fps.h"
 #include "color_grading_ui.h"
 #include "utils.h"
-#include "video_frame_utils.h"
 
 extern "C"
 {
@@ -820,11 +819,6 @@ double DecoderCPU::advancePlayback()
 
     auto frame = std::move(nextFrame);
     pendingFrames.pop_front();
-
-    if (!uploadDecodedFrame(engine, frame))
-    {
-        std::cerr << "[Video2D] Failed to upload decoded frame." << std::endl;
-    }
 
     lastFramePtsSeconds = frame.ptsSeconds;
     lastFrameRenderTime = currentTime;

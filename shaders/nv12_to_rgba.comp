@@ -1,0 +1,107 @@
+#version 450
+#extension GL_ARB_separate_shader_objects : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D yTex;     // R8_UNORM
+layout(set = 0, binding = 1) uniform sampler2D uvTex;    // RG8_UNORM
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D rgbaOutput;
+
+layout(push_constant) uniform PushConstants {
+    ivec2 rgbaSize;   // output size
+    ivec2 uvSize;     // chroma size (usually rgbaSize/2 for 4:2:0)
+    int colorSpace;   // 0=BT.601, 1=BT.709, 2=BT.2020
+    int colorRange;   // 0=limited, 1=full
+} pushC;
+
+struct RgbCoefficients { vec3 r; vec3 g; vec3 b; };
+
+RgbCoefficients getCoefficients(int space)
+{
+    if (space == 0) {
+        // BT.601 limited range (includes 1.164383 factor)
+        return RgbCoefficients(
+            vec3(1.164383, 0.000000, 1.596027),
+            vec3(1.164383, -0.391762, -0.812968),
+            vec3(1.164383, 2.017232, 0.000000));
+    } else if (space == 2) {
+        // BT.2020 limited range (includes 1.164383 factor)
+        return RgbCoefficients(
+            vec3(1.164383, 0.000000, 1.678674),
+            vec3(1.164383, -0.187326, -0.650424),
+            vec3(1.164383, 2.141772, 0.000000));
+    }
+    // BT.709 limited range (default, includes 1.164383 factor)
+    return RgbCoefficients(
+        vec3(1.164383, 0.000000, 1.792741),
+        vec3(1.164383, -0.213249, -0.532909),
+        vec3(1.164383, 2.112402, 0.000000));
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= pushC.rgbaSize.x || pixel.y >= pushC.rgbaSize.y)
+        return;
+
+    // Point-sample exact texels (no filtering)
+    float yNorm = texelFetch(yTex, pixel, 0).r;
+
+    ivec2 uvCoord = ivec2(
+        clamp(pixel.x >> 1, 0, pushC.uvSize.x - 1),
+        clamp(pixel.y >> 1, 0, pushC.uvSize.y - 1)
+    );
+    vec2 uvNorm = texelFetch(uvTex, uvCoord, 0).rg;
+
+    // Convert to 8-bit domain with standard offsets
+    float Y, U, V;
+    if (pushC.colorRange == 1) {
+        // Full range
+        Y = yNorm * 255.0;
+        U = uvNorm.r * 255.0 - 128.0;
+        V = uvNorm.g * 255.0 - 128.0;
+    } else {
+        // Limited range
+        Y = max(0.0, yNorm * 255.0 - 16.0);
+        U = uvNorm.r * 255.0 - 128.0;
+        V = uvNorm.g * 255.0 - 128.0;
+    }
+
+    float r, g, b;
+
+    if (pushC.colorRange == 1) {
+        // Full range matrices (no 1.164383 scale)
+        if (pushC.colorSpace == 0) {
+            // BT.601 full range
+            r = Y + 1.402000 * V;
+            g = Y - 0.344136 * U - 0.714136 * V;
+            b = Y + 1.772000 * U;
+        } else if (pushC.colorSpace == 2) {
+            // BT.2020 full range
+            r = Y + 1.474600 * V;
+            g = Y - 0.164553 * U - 0.571353 * V;
+            b = Y + 1.881400 * U;
+        } else {
+            // BT.709 full range
+            r = Y + 1.574800 * V;
+            g = Y - 0.187324 * U - 0.468124 * V;
+            b = Y + 1.855600 * U;
+        }
+    } else {
+        // Limited range matrices (1.164383 baked in)
+        RgbCoefficients c = getCoefficients(pushC.colorSpace);
+        r = c.r.x * Y + c.r.y * U + c.r.z * V;
+        g = c.g.x * Y + c.g.y * U + c.g.z * V;
+        b = c.b.x * Y + c.b.y * U + c.b.z * V;
+    }
+
+    // Proper RGBA
+    vec4 rgba = vec4(
+        clamp(r, 0.0, 255.0) / 255.0,
+        clamp(g, 0.0, 255.0) / 255.0,
+        clamp(b, 0.0, 255.0) / 255.0,
+        1.0
+    );
+
+    imageStore(rgbaOutput, pixel, rgba);
+}

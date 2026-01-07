@@ -11,7 +11,6 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
-#include "video_frame_utils.h"
 
 #include <vulkan/vulkan.h>
 

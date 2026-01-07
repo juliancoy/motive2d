@@ -101,7 +101,6 @@ bool ensureGradingWidgetRenderer(Engine2D *engine)
 ColorGradingUi::ColorGradingUi(Engine2D *engine,
                                const GradingSettings &settings,
                                ImageResource &image,
-                               OverlayImageInfo &info,
                                uint32_t fbWidth,
                                uint32_t fbHeight,
                                SliderLayout &layout,
@@ -378,11 +377,12 @@ ColorGradingUi::ColorGradingUi(Engine2D *engine,
                                     commands,
                                     true);
 
+                                    /*
     info.overlay.view = image.view;
     info.overlay.sampler = VK_NULL_HANDLE; // sampler set by caller
     info.extent = {layout.width, layout.height};
     info.offset = layout.offset;
-    info.enabled = true;
+    info.enabled = true;*/
 }
 
 bool ColorGradingUi::handleOverlayClick(const SliderLayout &layout,

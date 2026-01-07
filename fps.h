@@ -13,7 +13,6 @@
 class FpsOverlay
 {
 public:
-    OverlayImageInfo info;
     ImageResource image;
     float lastFpsValue = -1.0f;
     uint32_t lastRefWidth = 0;

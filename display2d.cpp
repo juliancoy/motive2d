@@ -1,423 +1,138 @@
+// display2d.cpp
 #include "display2d.h"
 #include "engine2d.h"
-#include "scrubber.h"
-#include "color_grading_pass.h"
-#include "utils.h"
-#include "debug_logging.h"
-#include <cstdlib>
+
 #include <stdexcept>
 #include <algorithm>
-#include <array>
-#include <cstddef>
-#include <chrono>
-#include <cstring>
 #include <iostream>
-#include <glm/glm.hpp>
+#include <unordered_map>
 
-namespace
-{
-struct LayoutInfo
-{
-    VkAccessFlags accessMask;
-    VkPipelineStageFlags stage;
-};
+namespace {
 
-LayoutInfo layoutInfoFor(VkImageLayout layout)
+// Track per-swapchain image layouts without adding members to Display2D.
+// Keying by VkSwapchainKHR is fine because we erase on destroy/recreate.
+static std::unordered_map<VkSwapchainKHR, std::vector<VkImageLayout>> g_swapchainLayouts;
+
+static VkSurfaceFormatKHR chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats)
 {
-    switch (layout)
+    // Prefer SRGB if available; otherwise first.
+    for (const auto& f : formats)
     {
-    case VK_IMAGE_LAYOUT_UNDEFINED:
-        return {0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT};
-    case VK_IMAGE_LAYOUT_GENERAL:
-        return {VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT};
-    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
-        return {VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
-    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-        return {VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
-    case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
-        return {0, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT};
-    default:
-        return {0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT};
+        if (f.format == VK_FORMAT_B8G8R8A8_SRGB &&
+            f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        {
+            return f;
+        }
+    }
+    return formats.empty() ? VkSurfaceFormatKHR{VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR}
+                           : formats[0];
+}
+
+static VkPresentModeKHR choosePresentMode(const std::vector<VkPresentModeKHR>& modes)
+{
+    // FIFO is guaranteed; MAILBOX is nice if available.
+    for (auto m : modes)
+    {
+        if (m == VK_PRESENT_MODE_MAILBOX_KHR) return m;
+    }
+    return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+static VkExtent2D chooseSwapExtent(GLFWwindow* window, const VkSurfaceCapabilitiesKHR& caps)
+{
+    if (caps.currentExtent.width != UINT32_MAX)
+    {
+        return caps.currentExtent;
+    }
+
+    int fbW = 0, fbH = 0;
+    glfwGetFramebufferSize(window, &fbW, &fbH);
+
+    VkExtent2D e{};
+    e.width  = static_cast<uint32_t>(std::max(0, fbW));
+    e.height = static_cast<uint32_t>(std::max(0, fbH));
+
+    e.width  = std::max(caps.minImageExtent.width,  std::min(caps.maxImageExtent.width,  e.width));
+    e.height = std::max(caps.minImageExtent.height, std::min(caps.maxImageExtent.height, e.height));
+    return e;
+}
+
+static void framebufferResizeCallback(GLFWwindow* wnd, int /*w*/, int /*h*/)
+{
+    auto* self = reinterpret_cast<Display2D*>(glfwGetWindowUserPointer(wnd));
+    if (self)
+    {
+        // We can’t access private members here; this is a friendless callback.
+        // So we just set a window user pointer flag by storing it in GLFW itself:
+        // We’ll read framebuffer size each frame and handle OUT_OF_DATE/SUBOPTIMAL.
+        // (Display2D uses framebufferResized_ internally; we flip it via a small hack below.)
     }
 }
 
-VkExtent2D chooseSwapExtentImpl(GLFWwindow* window, const VkSurfaceCapabilitiesKHR& capabilities)
+static void setFramebufferResized(Display2D* d, bool v)
 {
-    if (capabilities.currentExtent.width != UINT32_MAX)
-    {
-        return capabilities.currentExtent;
-    }
-
-    int width = 0;
-    int height = 0;
-    glfwGetFramebufferSize(window, &width, &height);
-
-    VkExtent2D actualExtent = {
-        static_cast<uint32_t>(width),
-        static_cast<uint32_t>(height)};
-
-    actualExtent.width = std::max(capabilities.minImageExtent.width,
-                                  std::min(capabilities.maxImageExtent.width, actualExtent.width));
-    actualExtent.height = std::max(capabilities.minImageExtent.height,
-                                   std::min(capabilities.maxImageExtent.height, actualExtent.height));
-    return actualExtent;
+    // Minimal “friendless” way: store a boolean in GLFW’s user pointer alongside Display2D*
+    // is messy. Instead we rely primarily on OUT_OF_DATE/SUBOPTIMAL and the zero-size loop.
+    // But we *do* still want the hint; easiest is to use a GLFW window attribute slot:
+    // Not available. So we’ll just recreate on OUT_OF_DATE/SUBOPTIMAL.
+    (void)d; (void)v;
 }
+
 } // namespace
 
 Display2D::Display2D(Engine2D* engine, int width, int height, const char* title)
-    : engine(engine), width(width), height(height)
+    : engine(engine), width_(width), height_(height)
 {
     if (!engine)
-    {
         throw std::runtime_error("Display2D requires a valid engine");
-    }
 
+    graphicsQueue_ = engine->graphicsQueue;
 
-    graphicsQueue = engine->graphicsQueue;
-    createWindow(title);
-    createSurface();
-    createSwapchain();
-    createCommandResources();
+    createWindow_(title);
+    createSurface_();
+    createSwapchain_();
+    createFrameResources_();
 
-    // Descriptor pool and sets (one per swapchain image)
-    std::array<VkDescriptorPoolSize, 3> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[0].descriptorCount = static_cast<uint32_t>(swapchainImages.size());
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[1].descriptorCount = static_cast<uint32_t>(swapchainImages.size()) * 4;
-    poolSizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[2].descriptorCount = static_cast<uint32_t>(swapchainImages.size());
-
-    VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = static_cast<uint32_t>(swapchainImages.size());
-
-    if (vkCreateDescriptorPool(engine->logicalDevice, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Failed to create descriptor pool for Display2D");
-    }
-
-    std::vector<VkDescriptorSetLayout> layouts(swapchainImages.size(), descriptorSetLayout);
-    VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
-    allocInfo.pSetLayouts = layouts.data();
-
-    descriptorSets.resize(layouts.size());
-
-    // Descriptor set layout
-    std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
-    // 0: swapchain storage image
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    // Optional: you can still register a callback (OUT_OF_DATE handling is the real trigger).
+    glfwSetFramebufferSizeCallback(window_, framebufferResizeCallback);
 }
 
 Display2D::~Display2D()
 {
-    if (shutdownPerformed)
-    {
+    shutdown();
+}
+
+void Display2D::shutdown()
+{
+    if (shutdownPerformed_)
         return;
-    }
 
-    using clock = std::chrono::steady_clock;
-    auto t0 = clock::now();
-
-    // Wait for any in-flight frame work to complete before tearing down swapchain-dependent resources.
-    if (!inFlightFences.empty() && engine && engine->logicalDevice != VK_NULL_HANDLE)
-    {
-        vkWaitForFences(engine->logicalDevice,
-                        static_cast<uint32_t>(inFlightFences.size()),
-                        inFlightFences.data(),
-                        VK_TRUE,
-                        UINT64_MAX);
-    }
-    if (graphicsQueue != VK_NULL_HANDLE)
-    {
-        vkQueueWaitIdle(graphicsQueue);
-    }
     if (engine && engine->logicalDevice != VK_NULL_HANDLE)
     {
         vkDeviceWaitIdle(engine->logicalDevice);
     }
-    auto tWait = clock::now();
 
-    cleanupSwapchain();
-    auto tSwapchain = clock::now();
+    destroyFrameResources_();
+    destroySwapchain_();
 
-    if (descriptorPool != VK_NULL_HANDLE)
+    if (surface_ != VK_NULL_HANDLE)
     {
-        vkDestroyDescriptorPool(engine->logicalDevice, descriptorPool, nullptr);
-        descriptorPool = VK_NULL_HANDLE;
-    }
-    if (descriptorSetLayout != VK_NULL_HANDLE)
-    {
-        vkDestroyDescriptorSetLayout(engine->logicalDevice, descriptorSetLayout, nullptr);
-        descriptorSetLayout = VK_NULL_HANDLE;
-    }
-    if (commandPool != VK_NULL_HANDLE)
-    {
-        vkDestroyCommandPool(engine->logicalDevice, commandPool, nullptr);
-        commandPool = VK_NULL_HANDLE;
-    }
-    auto tGpuObjects = clock::now();
-
-    if (surface != VK_NULL_HANDLE)
-    {
-        vkDestroySurfaceKHR(engine->instance, surface, nullptr);
-        surface = VK_NULL_HANDLE;
-    }
-    if (window)
-    {
-        glfwDestroyWindow(window);
-        window = nullptr;
-    }
-    auto tEnd = clock::now();
-
-    auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(tWait - t0).count();
-    auto swapchainMs = std::chrono::duration_cast<std::chrono::milliseconds>(tSwapchain - tWait).count();
-    auto gpuObjectsMs = std::chrono::duration_cast<std::chrono::milliseconds>(tGpuObjects - tSwapchain).count();
-    auto windowMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tGpuObjects).count();
-    if (renderDebugEnabled())
-    {
-        std::cout << "[Display2D] teardown timing: waitAll=" << waitMs
-                  << " ms, swapchain=" << swapchainMs
-                  << " ms, gpuObjects=" << gpuObjectsMs
-                  << " ms, window=" << windowMs << " ms" << std::endl;
+        vkDestroySurfaceKHR(engine->instance, surface_, nullptr);
+        surface_ = VK_NULL_HANDLE;
     }
 
-    shutdownPerformed = true;
-}
-
-void Display2D::createWindow(const char* title)
-{
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    window = glfwCreateWindow(width, height, title, nullptr, nullptr);
-    if (!window)
+    if (window_)
     {
-        throw std::runtime_error("Failed to create GLFW window for Display2D");
-    }
-}
-
-void Display2D::createSurface()
-{
-    if (glfwCreateWindowSurface(engine->instance, window, nullptr, &surface) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Failed to create window surface for Display2D");
-    }
-}
-
-void Display2D::createSwapchain()
-{
-    VkSurfaceCapabilitiesKHR capabilities{};
-    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(engine->physicalDevice, surface, &capabilities) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Failed to query surface capabilities for Display2D");
+        glfwDestroyWindow(window_);
+        window_ = nullptr;
     }
 
-    uint32_t formatCount = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(engine->physicalDevice, surface, &formatCount, nullptr);
-    std::vector<VkSurfaceFormatKHR> formats(formatCount);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(engine->physicalDevice, surface, &formatCount, formats.data());
-
-    VkSurfaceFormatKHR surfaceFormat = formats[0];
-    for (const auto& fmt : formats)
-    {
-        if (fmt.format == VK_FORMAT_B8G8R8A8_SRGB && fmt.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-        {
-            surfaceFormat = fmt;
-            break;
-        }
-    }
-
-    swapchainFormat = surfaceFormat.format;
-    swapchainExtent = chooseSwapExtentImpl(window, capabilities);
-
-    uint32_t imageCount = capabilities.minImageCount + 1;
-    if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount)
-    {
-        imageCount = capabilities.maxImageCount;
-    }
-
-    VkSwapchainCreateInfoKHR createInfo{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
-    createInfo.surface = surface;
-    createInfo.minImageCount = imageCount;
-    createInfo.imageFormat = swapchainFormat;
-    createInfo.imageColorSpace = surfaceFormat.colorSpace;
-    createInfo.imageExtent = swapchainExtent;
-    createInfo.imageArrayLayers = 1;
-    createInfo.imageUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-    // Single queue family path
-    createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    createInfo.preTransform = capabilities.currentTransform;
-    createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
-    createInfo.clipped = VK_TRUE;
-
-    if (vkCreateSwapchainKHR(engine->logicalDevice, &createInfo, nullptr, &swapchain) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Failed to create swapchain for Display2D");
-    }
-
-    vkGetSwapchainImagesKHR(engine->logicalDevice, swapchain, &imageCount, nullptr);
-    swapchainImages.resize(imageCount);
-    vkGetSwapchainImagesKHR(engine->logicalDevice, swapchain, &imageCount, swapchainImages.data());
-
-    swapchainImageViews.resize(imageCount);
-    for (size_t i = 0; i < swapchainImages.size(); ++i)
-    {
-        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        viewInfo.image = swapchainImages[i];
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = swapchainFormat;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.baseMipLevel = 0;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.baseArrayLayer = 0;
-        viewInfo.subresourceRange.layerCount = 1;
-
-    if (vkCreateImageView(engine->logicalDevice, &viewInfo, nullptr, &swapchainImageViews[i]) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Failed to create swapchain image view for Display2D");
-    }
-}
-
-    swapchainImageLayouts.assign(swapchainImages.size(), VK_IMAGE_LAYOUT_UNDEFINED);
-
-    imageAvailableSemaphores.resize(kMaxFramesInFlight);
-    renderFinishedSemaphores.resize(kMaxFramesInFlight);
-    inFlightFences.resize(kMaxFramesInFlight);
-
-    VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-    for (int i = 0; i < kMaxFramesInFlight; ++i)
-    {
-    if (vkCreateSemaphore(engine->logicalDevice, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(engine->logicalDevice, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
-            vkCreateFence(engine->logicalDevice, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS)
-        {
-            throw std::runtime_error("Failed to create sync objects for Display2D");
-        }
-    }
-}
-
-void Display2D::cleanupSwapchain()
-{
-    using clock = std::chrono::steady_clock;
-    auto t0 = clock::now();
-
-    for (auto view : swapchainImageViews)
-    {
-        vkDestroyImageView(engine->logicalDevice, view, nullptr);
-    }
-    auto tViews = clock::now();
-    swapchainImageViews.clear();
-    swapchainImages.clear();
-    swapchainImageLayouts.clear();
-    // colorGrading.destroyGradingImages(); // TODO: Add color grading member if needed
-
-    for (auto fence : inFlightFences)
-    {
-        vkDestroyFence(engine->logicalDevice, fence, nullptr);
-    }
-    auto tFences = clock::now();
-    for (auto sem : imageAvailableSemaphores)
-    {
-        vkDestroySemaphore(engine->logicalDevice, sem, nullptr);
-    }
-    auto tImageSems = clock::now();
-    for (auto sem : renderFinishedSemaphores)
-    {
-        vkDestroySemaphore(engine->logicalDevice, sem, nullptr);
-    }
-    auto tRenderSems = clock::now();
-
-    imageAvailableSemaphores.clear();
-    renderFinishedSemaphores.clear();
-    inFlightFences.clear();
-
-    if (swapchain != VK_NULL_HANDLE)
-    {
-        vkDestroySwapchainKHR(engine->logicalDevice, swapchain, nullptr);
-        swapchain = VK_NULL_HANDLE;
-    }
-    auto tSwapchain = clock::now();
-
-    auto viewsMs = std::chrono::duration_cast<std::chrono::milliseconds>(tViews - t0).count();
-    auto fencesMs = std::chrono::duration_cast<std::chrono::milliseconds>(tFences - tViews).count();
-    auto semAvailMs = std::chrono::duration_cast<std::chrono::milliseconds>(tImageSems - tFences).count();
-    auto semRenderMs = std::chrono::duration_cast<std::chrono::milliseconds>(tRenderSems - tImageSems).count();
-    auto swapchainMs = std::chrono::duration_cast<std::chrono::milliseconds>(tSwapchain - tRenderSems).count();
-    if (renderDebugEnabled())
-    {
-        std::cout << "[Display2D] cleanupSwapchain timing: views=" << viewsMs
-                  << " ms, fences=" << fencesMs
-                  << " ms, sem(ap)=" << semAvailMs
-                  << " ms, sem(render)=" << semRenderMs
-                  << " ms, swapchain=" << swapchainMs << " ms" << std::endl;
-    }
-}
-
-
-void Display2D::createCommandResources()
-{
-    VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    poolInfo.queueFamilyIndex = engine->graphicsQueueFamilyIndex;
-    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-
-    if (vkCreateCommandPool(engine->logicalDevice, &poolInfo, nullptr, &commandPool) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Failed to create command pool for Display2D");
-    }
-
-    VkCommandBufferAllocateInfo allocInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    allocInfo.commandPool = commandPool;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandBufferCount = 1;
-
-    if (vkAllocateCommandBuffers(engine->logicalDevice, &allocInfo, &commandBuffer) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Failed to allocate command buffer for Display2D");
-    }
-}
-
-
-void Display2D::recreateSwapchain()
-{
-    int fbWidth = 0;
-    int fbHeight = 0;
-    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
-    while (fbWidth == 0 || fbHeight == 0)
-    {
-        glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
-        glfwWaitEvents();
-    }
-    vkDeviceWaitIdle(engine->logicalDevice);
-
-    if (descriptorPool != VK_NULL_HANDLE)
-    {
-        vkDestroyDescriptorPool(engine->logicalDevice, descriptorPool, nullptr);
-        descriptorPool = VK_NULL_HANDLE;
-    }
-    if (commandPool != VK_NULL_HANDLE)
-    {
-        vkDestroyCommandPool(engine->logicalDevice, commandPool, nullptr);
-        commandPool = VK_NULL_HANDLE;
-    }
-
-    cleanupSwapchain();
-    createSwapchain();
-    createCommandResources();
+    shutdownPerformed_ = true;
 }
 
 bool Display2D::shouldClose() const
 {
-    return glfwWindowShouldClose(window);
+    return window_ ? glfwWindowShouldClose(window_) : true;
 }
 
 void Display2D::pollEvents() const
@@ -425,102 +140,381 @@ void Display2D::pollEvents() const
     glfwPollEvents();
 }
 
-void Display2D::renderFrame()
+SwapchainInfo Display2D::swapchainInfo() const
 {
-    if (!engine || !swapchain)
+    SwapchainInfo sc{};
+    sc.format = swapchainFormat_;
+    sc.extent = swapchainExtent_;
+    sc.generation = swapchainGeneration_;
+    sc.images = &swapchainImages_;
+    sc.views  = &swapchainImageViews_;
+    return sc;
+}
+
+void Display2D::createWindow_(const char* title)
+{
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    window_ = glfwCreateWindow(width_, height_, title, nullptr, nullptr);
+    if (!window_)
+        throw std::runtime_error("Failed to create GLFW window for Display2D");
+
+    glfwSetWindowUserPointer(window_, this);
+}
+
+void Display2D::createSurface_()
+{
+    if (glfwCreateWindowSurface(engine->instance, window_, nullptr, &surface_) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create window surface for Display2D");
+}
+
+void Display2D::createSwapchain_()
+{
+    // Handle minimized window (0x0) gracefully by waiting.
+    int fbW = 0, fbH = 0;
+    glfwGetFramebufferSize(window_, &fbW, &fbH);
+    while (fbW == 0 || fbH == 0)
+    {
+        glfwWaitEvents();
+        glfwGetFramebufferSize(window_, &fbW, &fbH);
+    }
+
+    VkSurfaceCapabilitiesKHR caps{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(engine->physicalDevice, surface_, &caps) != VK_SUCCESS)
+        throw std::runtime_error("Failed to query surface capabilities");
+
+    uint32_t formatCount = 0;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(engine->physicalDevice, surface_, &formatCount, nullptr);
+    std::vector<VkSurfaceFormatKHR> formats(formatCount);
+    if (formatCount)
+        vkGetPhysicalDeviceSurfaceFormatsKHR(engine->physicalDevice, surface_, &formatCount, formats.data());
+
+    uint32_t pmCount = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(engine->physicalDevice, surface_, &pmCount, nullptr);
+    std::vector<VkPresentModeKHR> presentModes(pmCount);
+    if (pmCount)
+        vkGetPhysicalDeviceSurfacePresentModesKHR(engine->physicalDevice, surface_, &pmCount, presentModes.data());
+
+    const VkSurfaceFormatKHR chosenFormat = chooseSurfaceFormat(formats);
+    const VkPresentModeKHR chosenPresentMode = choosePresentMode(presentModes);
+    const VkExtent2D extent = chooseSwapExtent(window_, caps);
+
+    uint32_t imageCount = caps.minImageCount + 1;
+    if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount)
+        imageCount = caps.maxImageCount;
+
+    VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    ci.surface = surface_;
+    ci.minImageCount = imageCount;
+    ci.imageFormat = chosenFormat.format;
+    ci.imageColorSpace = chosenFormat.colorSpace;
+    ci.imageExtent = extent;
+    ci.imageArrayLayers = 1;
+
+    // We want transfer dst for a generic presenter that copies/blits into the swapchain.
+    // If you later add a compute presenter that writes directly, it can transition to GENERAL.
+    ci.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+    ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ci.preTransform = caps.currentTransform;
+    ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    ci.presentMode = chosenPresentMode;
+    ci.clipped = VK_TRUE;
+
+    if (vkCreateSwapchainKHR(engine->logicalDevice, &ci, nullptr, &swapchain_) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create swapchain");
+
+    swapchainFormat_ = chosenFormat.format;
+    swapchainExtent_ = extent;
+
+    uint32_t actualCount = 0;
+    vkGetSwapchainImagesKHR(engine->logicalDevice, swapchain_, &actualCount, nullptr);
+    swapchainImages_.resize(actualCount);
+    vkGetSwapchainImagesKHR(engine->logicalDevice, swapchain_, &actualCount, swapchainImages_.data());
+
+    swapchainImageViews_.resize(actualCount);
+    for (size_t i = 0; i < swapchainImages_.size(); ++i)
+    {
+        VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vi.image = swapchainImages_[i];
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = swapchainFormat_;
+        vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vi.subresourceRange.baseMipLevel = 0;
+        vi.subresourceRange.levelCount = 1;
+        vi.subresourceRange.baseArrayLayer = 0;
+        vi.subresourceRange.layerCount = 1;
+
+        if (vkCreateImageView(engine->logicalDevice, &vi, nullptr, &swapchainImageViews_[i]) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create swapchain image view");
+    }
+
+    g_swapchainLayouts[swapchain_] = std::vector<VkImageLayout>(swapchainImages_.size(), VK_IMAGE_LAYOUT_UNDEFINED);
+
+    ++swapchainGeneration_;
+
+    if (presenter_)
+        presenter_->onSwapchainChanged(swapchainInfo());
+}
+
+void Display2D::destroySwapchain_()
+{
+    if (!engine || engine->logicalDevice == VK_NULL_HANDLE)
         return;
 
-    // Wait for fence
-    vkWaitForFences(engine->logicalDevice, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-    vkResetFences(engine->logicalDevice, 1, &inFlightFences[currentFrame]);
-
-    // Acquire next image
-    uint32_t imageIndex;
-    VkResult acquireResult = vkAcquireNextImageKHR(engine->logicalDevice, swapchain, UINT64_MAX,
-                                                   imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
-    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR || acquireResult == VK_SUBOPTIMAL_KHR)
+    if (swapchain_ != VK_NULL_HANDLE)
     {
-        recreateSwapchain();
+        g_swapchainLayouts.erase(swapchain_);
+    }
+
+    for (auto v : swapchainImageViews_)
+    {
+        if (v != VK_NULL_HANDLE)
+            vkDestroyImageView(engine->logicalDevice, v, nullptr);
+    }
+    swapchainImageViews_.clear();
+    swapchainImages_.clear();
+
+    if (swapchain_ != VK_NULL_HANDLE)
+    {
+        vkDestroySwapchainKHR(engine->logicalDevice, swapchain_, nullptr);
+        swapchain_ = VK_NULL_HANDLE;
+    }
+
+    swapchainFormat_ = VK_FORMAT_UNDEFINED;
+    swapchainExtent_ = {0, 0};
+}
+
+void Display2D::createFrameResources_()
+{
+    VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pi.queueFamilyIndex = engine->graphicsQueueFamilyIndex;
+    pi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+
+    if (vkCreateCommandPool(engine->logicalDevice, &pi, nullptr, &commandPool_) != VK_SUCCESS)
+        throw std::runtime_error("Failed to create command pool");
+
+    // Allocate one cmd buffer per frame-in-flight.
+    std::vector<VkCommandBuffer> bufs(kMaxFramesInFlight);
+
+    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    ai.commandPool = commandPool_;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = kMaxFramesInFlight;
+
+    if (vkAllocateCommandBuffers(engine->logicalDevice, &ai, bufs.data()) != VK_SUCCESS)
+        throw std::runtime_error("Failed to allocate command buffers");
+
+    for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+    {
+        frames_[i].cmd = bufs[i];
+    }
+
+    VkSemaphoreCreateInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+    {
+        if (vkCreateSemaphore(engine->logicalDevice, &si, nullptr, &frames_[i].imageAvailable) != VK_SUCCESS ||
+            vkCreateSemaphore(engine->logicalDevice, &si, nullptr, &frames_[i].renderFinished) != VK_SUCCESS ||
+            vkCreateFence(engine->logicalDevice, &fi, nullptr, &frames_[i].inFlight) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create per-frame sync objects");
+        }
+    }
+}
+
+void Display2D::destroyFrameResources_()
+{
+    if (!engine || engine->logicalDevice == VK_NULL_HANDLE)
+        return;
+
+    for (uint32_t i = 0; i < kMaxFramesInFlight; ++i)
+    {
+        if (frames_[i].inFlight)
+            vkDestroyFence(engine->logicalDevice, frames_[i].inFlight, nullptr);
+        if (frames_[i].imageAvailable)
+            vkDestroySemaphore(engine->logicalDevice, frames_[i].imageAvailable, nullptr);
+        if (frames_[i].renderFinished)
+            vkDestroySemaphore(engine->logicalDevice, frames_[i].renderFinished, nullptr);
+
+        frames_[i] = {};
+    }
+
+    if (commandPool_ != VK_NULL_HANDLE)
+    {
+        vkDestroyCommandPool(engine->logicalDevice, commandPool_, nullptr);
+        commandPool_ = VK_NULL_HANDLE;
+    }
+}
+
+void Display2D::recreateSwapchain_()
+{
+    if (!engine || engine->logicalDevice == VK_NULL_HANDLE)
+        return;
+
+    // Avoid recreating while minimized.
+    int fbW = 0, fbH = 0;
+    glfwGetFramebufferSize(window_, &fbW, &fbH);
+    while (fbW == 0 || fbH == 0)
+    {
+        glfwWaitEvents();
+        glfwGetFramebufferSize(window_, &fbW, &fbH);
+    }
+
+    vkDeviceWaitIdle(engine->logicalDevice);
+
+    destroySwapchain_();
+    createSwapchain_();
+}
+
+void Display2D::beginCmd_(VkCommandBuffer cmd)
+{
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &bi);
+}
+
+void Display2D::endCmd_(VkCommandBuffer cmd)
+{
+    vkEndCommandBuffer(cmd);
+}
+
+void Display2D::renderFrame(VkSemaphore externalWaitSemaphore,
+                            VkPipelineStageFlags externalWaitStage)
+{
+    if (!engine || swapchain_ == VK_NULL_HANDLE)
+        return;
+
+    Frame& fr = frames_[currentFrame_];
+
+    vkWaitForFences(engine->logicalDevice, 1, &fr.inFlight, VK_TRUE, UINT64_MAX);
+    vkResetFences(engine->logicalDevice, 1, &fr.inFlight);
+
+    uint32_t imageIndex = 0;
+    VkResult acq = vkAcquireNextImageKHR(engine->logicalDevice,
+                                         swapchain_,
+                                         UINT64_MAX,
+                                         fr.imageAvailable,
+                                         VK_NULL_HANDLE,
+                                         &imageIndex);
+
+    if (acq == VK_ERROR_OUT_OF_DATE_KHR || acq == VK_SUBOPTIMAL_KHR)
+    {
+        recreateSwapchain_();
         return;
     }
-    else if (acquireResult != VK_SUCCESS)
+    if (acq != VK_SUCCESS)
+        throw std::runtime_error("vkAcquireNextImageKHR failed");
+
+    vkResetCommandBuffer(fr.cmd, 0);
+    beginCmd_(fr.cmd);
+
+    // --- swapchain layout -> TRANSFER_DST_OPTIMAL (same as your code) ---
+    auto it = g_swapchainLayouts.find(swapchain_);
+    if (it == g_swapchainLayouts.end() || imageIndex >= it->second.size())
     {
-        throw std::runtime_error("Failed to acquire swapchain image");
+        endCmd_(fr.cmd);
+        recreateSwapchain_();
+        return;
     }
 
-    // Debug: print which swapchain image we're using
-    if (renderDebugEnabled())
-    {
-        std::cout << "[Display2D] renderFrame: imageIndex=" << imageIndex
-                  << ", swapchainImages=" << swapchainImages.size()
-                  << ", descriptorSets=" << descriptorSets.size()
-                  << std::endl;
-    }
+    VkImage swapImg = swapchainImages_[imageIndex];
+    VkImageLayout oldLayout = it->second[imageIndex];
 
-    // Transition swapchain image layout to PRESENT_SRC_KHR (or keep as is)
-    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.oldLayout = swapchainImageLayouts[imageIndex];
-    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = swapchainImages[imageIndex];
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    barrier.dstAccessMask = 0;
+    VkImageMemoryBarrier toDst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toDst.oldLayout = oldLayout;
+    toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toDst.image = swapImg;
+    toDst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toDst.subresourceRange.baseMipLevel = 0;
+    toDst.subresourceRange.levelCount = 1;
+    toDst.subresourceRange.baseArrayLayer = 0;
+    toDst.subresourceRange.layerCount = 1;
+    toDst.srcAccessMask = 0;
+    toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-    VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
-    vkCmdPipelineBarrier(commandBuffer,
+    vkCmdPipelineBarrier(fr.cmd,
                          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &toDst);
+
+    it->second[imageIndex] = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+    // presenter work
+    if (presenter_ && presentInput_.image != VK_NULL_HANDLE)
+    {
+        presenter_->record(fr.cmd,
+                           swapImg,
+                           swapchainImageViews_[imageIndex],
+                           swapchainExtent_,
+                           presentInput_,
+                           overrides_);
+    }
+    else
+    {
+        VkClearColorValue black{};
+        VkImageSubresourceRange range{};
+        range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        range.levelCount = 1;
+        range.layerCount = 1;
+        vkCmdClearColorImage(fr.cmd, swapImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+    }
+
+    // --- TRANSFER_DST_OPTIMAL -> PRESENT_SRC_KHR (same as your code) ---
+    VkImageMemoryBarrier toPresent{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    toPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toPresent.image = swapImg;
+    toPresent.subresourceRange = toDst.subresourceRange;
+    toPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toPresent.dstAccessMask = 0;
+
+    vkCmdPipelineBarrier(fr.cmd,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                         0,
-                         0, nullptr,
-                         0, nullptr,
-                         1, &barrier);
-    vkEndCommandBuffer(commandBuffer);
+                         0, 0, nullptr, 0, nullptr, 1, &toPresent);
 
-    // Submit command buffer
-    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
-    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = waitSemaphores;
-    submitInfo.pWaitDstStageMask = waitStages;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-    VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = signalSemaphores;
+    it->second[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
-    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS)
-    {
-        throw std::runtime_error("Failed to submit draw command buffer");
-    }
+    endCmd_(fr.cmd);
 
-    // Present
-    VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-    presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = signalSemaphores;
-    presentInfo.swapchainCount = 1;
-    presentInfo.pSwapchains = &swapchain;
-    presentInfo.pImageIndices = &imageIndex;
-    presentInfo.pResults = nullptr;
+    // ---- submit with 1 or 2 wait semaphores ----
+    VkSemaphore waitSems[2] = { fr.imageAvailable, externalWaitSemaphore };
+    VkPipelineStageFlags waitStages[2] = { VK_PIPELINE_STAGE_TRANSFER_BIT, externalWaitStage };
 
-    VkResult presentResult = vkQueuePresentKHR(graphicsQueue, &presentInfo);
-    if (presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR)
-    {
-        recreateSwapchain();
-    }
-    else if (presentResult != VK_SUCCESS)
-    {
-        throw std::runtime_error("Failed to present swapchain image");
-    }
+    uint32_t waitCount = 1;
+    if (externalWaitSemaphore != VK_NULL_HANDLE)
+        waitCount = 2;
 
-    swapchainImageLayouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    currentFrame = (currentFrame + 1) % kMaxFramesInFlight;
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.waitSemaphoreCount = waitCount;
+    si.pWaitSemaphores = waitSems;
+    si.pWaitDstStageMask = waitStages;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &fr.cmd;
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &fr.renderFinished;
+
+    if (vkQueueSubmit(graphicsQueue_, 1, &si, fr.inFlight) != VK_SUCCESS)
+        throw std::runtime_error("vkQueueSubmit failed");
+
+    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &fr.renderFinished;
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &swapchain_;
+    pi.pImageIndices = &imageIndex;
+
+    VkResult pr = vkQueuePresentKHR(graphicsQueue_, &pi);
+    if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR)
+        recreateSwapchain_();
+    else if (pr != VK_SUCCESS)
+        throw std::runtime_error("vkQueuePresentKHR failed");
+
+    currentFrame_ = (currentFrame_ + 1) % kMaxFramesInFlight;
 }
