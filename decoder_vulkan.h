@@ -15,6 +15,8 @@
 #include <vector>
 
 #include <vulkan/vulkan.h>
+#include <libavutil/pixfmt.h>
+#include <libavutil/rational.h>
 
 // Forward decl
 class Engine2D;
@@ -26,10 +28,6 @@ extern "C" {
     struct AVPacket;
     struct AVBufferRef;
     struct AVCodec;
-    struct AVRational;
-
-    // If you prefer, you can include <libavutil/pixfmt.h> here instead.
-    enum AVPixelFormat;
 }
 
 struct VulkanSurface
@@ -39,30 +37,30 @@ struct VulkanSurface
     uint32_t width = 0;
     uint32_t height = 0;
 
-    // We only support the common case (NV12/NV21 or 2-plane Vulkan decode surfaces).
-    // If you later need >2, increase this.
+    // Support up to 3 planes for YUV420P (Y, U, V)
     uint32_t planes = 0;
 
-    std::array<VkImage, 2> images{VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<VkImageLayout, 2> layouts{VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
+    std::array<VkImage, 3> images{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<VkImageLayout, 3> layouts{VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED};
 
     // FFmpeg Vulkan frames often provide timeline semaphores for readiness.
-    std::array<VkSemaphore, 2> semaphores{VK_NULL_HANDLE, VK_NULL_HANDLE};
-    std::array<uint64_t, 2> semaphoreValues{0, 0};
+    std::array<VkSemaphore, 3> semaphores{VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::array<uint64_t, 3> semaphoreValues{0, 0, 0};
 
-    // Queue family that currently “owns” the images (FFmpeg side).
-    std::array<uint32_t, 2> queueFamily{VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED};
+    // Queue family that currently "owns" the images (FFmpeg side).
+    std::array<uint32_t, 3> queueFamily{VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED};
 
     // Best-effort VkFormat for each plane (may be VK_FORMAT_UNDEFINED if unknown).
-    std::array<VkFormat, 2> planeFormats{VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED};
+    std::array<VkFormat, 3> planeFormats{VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED};
 
     bool validate() const
     {
         if (!valid) return false;
         if (width == 0 || height == 0) return false;
-        if (planes == 0 || planes > 2) return false;
-        if (images[0] == VK_NULL_HANDLE) return false;
-        if (planes > 1 && images[1] == VK_NULL_HANDLE) return false;
+        if (planes == 0 || planes > 3) return false;
+        for (uint32_t i = 0; i < planes; ++i) {
+            if (images[i] == VK_NULL_HANDLE) return false;
+        }
         return true;
     }
 };

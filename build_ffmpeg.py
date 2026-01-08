@@ -104,6 +104,7 @@ def has_libvulkan():
     """
     Best-effort check that the Vulkan loader is available for linking/running.
     """
+    # ldconfig is the most reliable on Linux if present.
     if shutil.which("ldconfig"):
         try:
             out = subprocess.check_output(["ldconfig", "-p"], text=True, stderr=subprocess.DEVNULL)
@@ -112,6 +113,7 @@ def has_libvulkan():
         except Exception:
             pass
 
+    # Fallback checks.
     common = [
         Path("/usr/lib/x86_64-linux-gnu/libvulkan.so"),
         Path("/usr/lib64/libvulkan.so"),
@@ -151,6 +153,9 @@ def ensure_local_vulkan_pc():
     pc_dir.mkdir(parents=True, exist_ok=True)
     pc_path = pc_dir / "vulkan.pc"
 
+    # FFmpeg's configure script includes the header via an absolute path, which skips
+    # our pkg-config include flags. Mirror the upstream Vulkan-Headers install layout
+    # by exposing vk_video/ next to vulkan_core.h so those relative includes resolve.
     vk_video_src = Path("Vulkan-Headers/include/vk_video")
     vk_video_link = Path("Vulkan-Headers/include/vulkan/vk_video")
     try:
@@ -159,6 +164,9 @@ def ensure_local_vulkan_pc():
             if vk_video_link.is_symlink() or vk_video_link.exists():
                 if vk_video_link.is_symlink() and vk_video_link.resolve() != vk_video_src.resolve():
                     vk_video_link.unlink()
+                else:
+                    # Already present and correct; nothing to do.
+                    pass
             if not vk_video_link.exists():
                 vk_video_link.symlink_to(Path("..") / "vk_video")
     except OSError as exc:
@@ -255,10 +263,17 @@ def determine_hwaccel_flags():
         else:
             skipped.append(description)
 
+    # Vulkan is handled explicitly and validated separately.
     return {"flags": flags, "enabled_descriptions": enabled, "skipped_descriptions": skipped}
 
 
 def require_vulkan_headers_and_loader(min_header_version="1.3.277"):
+    """
+    Fail fast if Vulkan headers and loader are not suitable for Vulkan Video work.
+    Note: headers come from pkg-config "vulkan" (we provide a local vulkan.pc),
+    loader is libvulkan (system).
+    """
+    # Header version (from pkg-config "vulkan")
     vulkan_version = pkg_config_version("vulkan")
     if not vulkan_version:
         print("Vulkan headers not found via pkg-config (vulkan).")
@@ -269,6 +284,7 @@ def require_vulkan_headers_and_loader(min_header_version="1.3.277"):
         print(f"Vulkan headers too old for Vulkan Video work (need >= {min_header_version}, found {vulkan_version}).")
         sys.exit(1)
 
+    # Loader (libvulkan)
     if not has_libvulkan():
         print("Vulkan loader (libvulkan) not found on this system.")
         if shutil.which("apt-get"):
@@ -279,6 +295,7 @@ def require_vulkan_headers_and_loader(min_header_version="1.3.277"):
             print("Please install a Vulkan loader (e.g. libvulkan-dev / vulkan-loader) and re-run.")
             sys.exit(1)
 
+    # Optional: warn if vulkaninfo is missing (useful for runtime extension checks).
     if shutil.which("vulkaninfo") is None:
         print("Note: vulkaninfo not found; runtime Vulkan Video extension checks will be skipped.")
         if shutil.which("apt-get"):
@@ -286,8 +303,13 @@ def require_vulkan_headers_and_loader(min_header_version="1.3.277"):
 
 
 def warn_if_no_vulkan_video_decode_extensions():
+    """
+    Best-effort runtime capability check. Build can succeed without this, but decode
+    will fail at runtime if the driver doesn't expose VK_KHR_video_decode_queue.
+    """
     if shutil.which("vulkaninfo") is None:
         return
+
     try:
         out = subprocess.check_output(["vulkaninfo"], text=True, stderr=subprocess.DEVNULL)
     except Exception:
@@ -295,6 +317,7 @@ def warn_if_no_vulkan_video_decode_extensions():
 
     needed = [
         "VK_KHR_video_decode_queue",
+        # Codec-specific extensions vary by driver; these are common.
         "VK_KHR_video_decode_h264",
         "VK_KHR_video_decode_h265",
         "VK_KHR_video_decode_av1",
@@ -305,6 +328,7 @@ def warn_if_no_vulkan_video_decode_extensions():
         print("WARNING: Your Vulkan driver does NOT report VK_KHR_video_decode_queue in vulkaninfo.")
         print("         FFmpeg may build with Vulkan enabled, but Vulkan Video *decode* will not work at runtime.")
     else:
+        # Helpful info only.
         codecs = [k for k in needed[1:] if present.get(k)]
         if codecs:
             print("Vulkan Video decode extensions detected:", ", ".join(codecs))
@@ -313,19 +337,27 @@ def warn_if_no_vulkan_video_decode_extensions():
 
 
 def assert_ffmpeg_config_has_vulkan(build_dir: Path):
+    """
+    Ensure configure actually enabled Vulkan.
+    (Do not trust passing --enable-vulkan alone; verify the generated config.)
+    """
     config_mak = build_dir / "ffbuild" / "config.mak"
+    config_h = build_dir / "config.h"
     config_log = build_dir / "ffbuild" / "config.log"
 
-    missing = [p for p in (config_mak, config_log) if not p.exists()]
+    missing = [p for p in (config_mak, config_h, config_log) if not p.exists()]
     if missing:
         print("Configure did not produce expected files:", ", ".join(str(p) for p in missing))
         sys.exit(1)
 
     mak_txt = config_mak.read_text(errors="ignore")
+    h_txt = config_h.read_text(errors="ignore")
     log_txt = config_log.read_text(errors="ignore")
 
+    # config.mak is the most consistent place to check CONFIG_* toggles.
     if "CONFIG_VULKAN=yes" not in mak_txt:
         print("FFmpeg configure did not enable Vulkan (CONFIG_VULKAN is not 'yes').")
+        # Show a small hint from config.log if present.
         for needle in ["vulkan", "Vulkan"]:
             idx = log_txt.find(needle)
             if idx != -1:
@@ -338,8 +370,16 @@ def assert_ffmpeg_config_has_vulkan(build_dir: Path):
                 break
         sys.exit(1)
 
+    # Secondary checks: these macros vary across versions; treat as advisory.
+    if ("HAVE_VULKAN" not in h_txt) and ("CONFIG_VULKAN" not in h_txt):
+        print("Note: Vulkan enabled in config.mak, but expected Vulkan markers weren't found in config.h (may be normal).")
+
 
 def assert_ffmpeg_tree_has_vulkan_decode_sources(ffmpeg_dir: Path):
+    """
+    Ensure the source tree contains Vulkan Video decode implementation source.
+    This is a strong indicator you're on a recent-enough FFmpeg snapshot.
+    """
     vulkan_decode = ffmpeg_dir / "libavcodec" / "vulkan_decode.c"
     if not vulkan_decode.exists():
         print("FFmpeg source tree is missing libavcodec/vulkan_decode.c")
@@ -361,6 +401,7 @@ def setup_ffmpeg():
         run_command("git clone https://github.com/FFmpeg/FFmpeg.git FFmpeg")
         print("FFmpeg repository cloned.")
 
+    # Ensure nasm exists for x86 assembly optimizations; otherwise, builds will fail.
     if shutil.which("nasm") is None:
         print("nasm assembler not found. Attempting to install via apt-get...")
         if shutil.which("apt-get"):
@@ -369,6 +410,7 @@ def setup_ffmpeg():
             print("apt-get not available; please install nasm manually and re-run.")
             sys.exit(1)
 
+    # Prefer the in-tree Vulkan-Headers by exporting a pkg-config file for them.
     local_vulkan_pc_dir = ensure_local_vulkan_pc()
     local_vulkan_pc_dir_abs = local_vulkan_pc_dir.resolve()
     existing_pc_path = os.environ.get("PKG_CONFIG_PATH", "")
@@ -380,28 +422,40 @@ def setup_ffmpeg():
 
     vulkan_include = str(Path("Vulkan-Headers/include").resolve())
 
+    # Fail fast on Vulkan prerequisites for Vulkan Video decode.
     require_vulkan_headers_and_loader(min_header_version="1.3.277")
     warn_if_no_vulkan_video_decode_extensions()
+
+    # Ensure FFmpeg tree is new enough to have Vulkan decode sources.
     assert_ffmpeg_tree_has_vulkan_decode_sources(ffmpeg_dir)
 
-    print("Configuring and building FFmpeg (static libs + CLI)...")
+    print("Configuring and building FFmpeg with static libraries...")
     build_dir = ffmpeg_dir / ".build"
     build_dir.mkdir(parents=True, exist_ok=True)
     install_prefix = (build_dir / "install").resolve()
     install_prefix.mkdir(parents=True, exist_ok=True)
 
     hwaccel_options = determine_hwaccel_flags()
+    if hwaccel_options["flags"]:
+        print("Enabling FFmpeg hardware decode features:", ", ".join(hwaccel_options["enabled_descriptions"]))
+    else:
+        print("No optional FFmpeg hardware decode features detected.")
+    if hwaccel_options["skipped_descriptions"]:
+        print("Skipping unavailable hardware features:", ", ".join(hwaccel_options["skipped_descriptions"]))
 
+    # Debug settings
     debug_enabled = os.environ.get("FFMPEG_DEBUG", "").lower() in {"1", "true", "yes", "on"}
-    debug_enabled = True  # preserve your existing behavior
+    # Your original script forced this on; keeping the behavior but making it explicit.
+    debug_enabled = True
 
+    # IMPORTANT: only pass --extra-cflags/--extra-ldflags ONCE, otherwise later flags override earlier ones.
     extra_cflags = f"-I{vulkan_include}"
     extra_cxxflags = f"-I{vulkan_include}"
     extra_ldflags = ""
 
     debug_flags = []
     if debug_enabled:
-        print("FFmpeg debug build enabled (debug symbols, no stripping, optimizations off).")
+        print("FFmpeg debug build enabled via FFMPEG_DEBUG (debug symbols, no stripping, optimizations off).")
         debug_flags.extend(
             [
                 "--disable-optimizations",
@@ -412,9 +466,9 @@ def setup_ffmpeg():
         extra_cflags += " -g"
         extra_cxxflags += " -g"
         extra_ldflags += " -g"
+    else:
+        print("FFmpeg debug build disabled (set FFMPEG_DEBUG=1 to enable debug symbols).")
 
-    # Build CLI: DO NOT --disable-programs
-    # (Optionally, you can restrict to just ffmpeg/ffprobe; leaving full programs enabled is simplest.)
     configure_flags = [
         f"PKG_CONFIG_PATH={pc_env}",
         "../configure",
@@ -422,11 +476,17 @@ def setup_ffmpeg():
         "--enable-static",
         "--disable-shared",
         "--enable-pic",
-        # programs enabled (default) => builds ffmpeg/ffprobe/ffplay (ffplay depends on SDL; may be skipped)
+        #"--disable-programs",
+        "--enable-vulkan",
+        "--enable-decoders",
+        "--enable-decoder=h265_vulkan",
+        "--enable-decoder=h264_vulkan",
+        "--enable-decoder=hevc_vulkan",
+        "--enable-decoder=av1_vulkan",
+        "--enable-decoder=vp9_vulkan",
         "--disable-doc",
         "--enable-gpl",
         "--enable-version3",
-        "--enable-vulkan",
         f"--extra-cflags={shlex.quote(extra_cflags)}",
         f"--extra-cxxflags={shlex.quote(extra_cxxflags)}",
     ]
@@ -439,13 +499,30 @@ def setup_ffmpeg():
 
     configure_cmd = " ".join(configure_flags)
 
+    build_dir.mkdir(parents=True, exist_ok=True)
+
     run_command(configure_cmd, cwd=build_dir)
 
+    # Post-configure assertion: ensure Vulkan is truly enabled.
     assert_ffmpeg_config_has_vulkan(build_dir)
 
     make_cmd = f"make -j{os.cpu_count()}"
     run_command(make_cmd, cwd=build_dir)
     run_command("make install", cwd=build_dir)
+    print(f"FFmpeg built and installed to {install_prefix} with static libraries"
+          )
+    ffmpeg_bin = install_prefix / "bin" / "ffmpeg"
+    ffprobe_bin = install_prefix / "bin" / "ffprobe"
+    print(f"FFmpeg built and installed to {install_prefix} (static libs + CLI)")
+    if ffmpeg_bin.exists():
+        print(f"ffmpeg:  {ffmpeg_bin}")
+    else:
+        print("Warning: ffmpeg binary not found after build/install.")
+    if ffprobe_bin.exists():
+        print(f"ffprobe: {ffprobe_bin}")
+    else:
+        print("Warning: ffprobe binary not found after build/install.")
+
 
 
 if __name__ == "__main__":

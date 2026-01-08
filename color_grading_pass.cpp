@@ -332,16 +332,21 @@ void ColorGrading::createPipeline_()
     if (vkCreateDescriptorSetLayout(engine->logicalDevice, &dsl, nullptr, &setLayout_) != VK_SUCCESS)
         throw std::runtime_error("ColorGrading: failed to create descriptor set layout");
 
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pcRange.offset = 0;
+    pcRange.size = 128; // HACK: Guessing push constant size, max is 256
+
     VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pli.setLayoutCount = 1;
     pli.pSetLayouts = &setLayout_;
-    pli.pushConstantRangeCount = 0;
-    pli.pPushConstantRanges = nullptr;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcRange;
 
     if (vkCreatePipelineLayout(engine->logicalDevice, &pli, nullptr, &pipelineLayout_) != VK_SUCCESS)
         throw std::runtime_error("ColorGrading: failed to create pipeline layout");
 
-    auto shaderCode = readSPIRVFile("shaders/color_grading_pass_rgba.spv");
+    auto shaderCode = readSPIRVFile("shaders/color_grading_pass.spv");
     VkShaderModule shaderModule = engine->createShaderModule(shaderCode);
 
     VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};

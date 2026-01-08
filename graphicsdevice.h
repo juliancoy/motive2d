@@ -79,6 +79,7 @@ private:
     VkPhysicalDeviceFeatures2 enabledFeatures2{};
     VkPhysicalDeviceSynchronization2Features enabledSync2Features{};
     VkPhysicalDeviceTimelineSemaphoreFeatures enabledTimelineFeatures{};
+    VkPhysicalDeviceVideoMaintenance1FeaturesKHR enabledVideoMaintenance1Features{};
 
     std::vector<std::string> enabledInstanceExtensionNames;
     std::vector<const char *> enabledInstanceExtensionNamePtrs;

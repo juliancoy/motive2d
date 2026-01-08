@@ -134,6 +134,26 @@ static void makeReadableForSampling(
         VK_ACCESS_SHADER_READ_BIT);
 }
 
+static void makeReadableForSamplingCompute(
+    VkCommandBuffer cmd,
+    VkImage image,
+    VkImageLayout oldLayout,
+    uint32_t srcQF,
+    uint32_t dstQF)
+{
+    imageBarrier(
+        cmd,
+        image,
+        oldLayout,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        srcQF,
+        dstQF,
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_SHADER_READ_BIT);
+}
+
 // ----------------------------------------
 // Motive2D
 // ----------------------------------------
@@ -153,12 +173,12 @@ Motive2D::Motive2D(CliOptions cliOptions)
     const std::filesystem::path subtitlePath =
         cliOptions.videoPath.parent_path() / (cliOptions.videoPath.stem().string() + ".json");
 
-    subtitle    = new Subtitle(subtitlePath, engine);
+    //subtitle    = new Subtitle(subtitlePath, engine);
     rectOverlay = new RectOverlay(engine);
     poseOverlay = new PoseOverlay(engine);
     crop        = new Crop();
     scrubber    = new Scrubber(engine);
-    fpsOverlay  = new FpsOverlay(engine);
+    //fpsOverlay  = new FpsOverlay(engine);
 
     if (!cliOptions.gpuDecode)
         throw std::runtime_error("Only GPU decode is supported in this build");
@@ -209,7 +229,7 @@ Motive2D::Motive2D(CliOptions cliOptions)
         nv12Pass = new Nv12ToRgbaPass(engine,
                                       static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT),
                                       w, h,
-                                      VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+                                      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
         nv12Pass->initialize();
     }
 }
@@ -224,12 +244,12 @@ Motive2D::~Motive2D()
     delete nv12Pass;
     nv12Pass = nullptr;
 
-    delete subtitle;
+    //delete subtitle;
     delete rectOverlay;
     delete poseOverlay;
     delete crop;
     delete scrubber;
-    delete fpsOverlay;
+    //delete fpsOverlay;
     delete decoder;
     delete engine;
 }
@@ -300,12 +320,12 @@ void Motive2D::recordComputeCommands(VkCommandBuffer cmd, int frameIndex, const 
 
     const uint32_t gfxQF = engine->graphicsQueueFamilyIndex;
 
-    // ---- Transition decode images to GENERAL for STORAGE_IMAGE reads (and queue-family transfer if needed) ----
+    // ---- Transition decode images to SHADER_READ_ONLY_OPTIMAL for sampled image reads (and queue-family transfer if needed) ----
     if (surf.valid && surf.planes >= 1 && surf.images[0] != VK_NULL_HANDLE)
-        makeReadableForStorageCompute(cmd, surf.images[0], surf.layouts[0], surf.queueFamily[0], gfxQF);
+        makeReadableForSamplingCompute(cmd, surf.images[0], surf.layouts[0], surf.queueFamily[0], gfxQF);
 
     if (surf.valid && surf.planes >= 2 && surf.images[1] != VK_NULL_HANDLE)
-        makeReadableForStorageCompute(cmd, surf.images[1], surf.layouts[1], surf.queueFamily[1], gfxQF);
+        makeReadableForSamplingCompute(cmd, surf.images[1], surf.layouts[1], surf.queueFamily[1], gfxQF);
 
     // ---- NV12 -> RGBA (pass-owned output) ----
     {
@@ -352,7 +372,7 @@ void Motive2D::recordComputeCommands(VkCommandBuffer cmd, int frameIndex, const 
     {
         imageBarrier(cmd,
                      surf.images[0],
-                     VK_IMAGE_LAYOUT_GENERAL,
+                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      surf.layouts[0],
                      gfxQF,
                      surf.queueFamily[0],
@@ -365,7 +385,7 @@ void Motive2D::recordComputeCommands(VkCommandBuffer cmd, int frameIndex, const 
     {
         imageBarrier(cmd,
                      surf.images[1],
-                     VK_IMAGE_LAYOUT_GENERAL,
+                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      surf.layouts[1],
                      gfxQF,
                      surf.queueFamily[1],
@@ -381,23 +401,30 @@ void Motive2D::recordComputeCommands(VkCommandBuffer cmd, int frameIndex, const 
 
 void Motive2D::run()
 {
+    int iteration = 0;
     while (!windows.empty())
     {
         FrameResources& fr = frames[currentFrame];
 
         // Wait for previous GPU work for this in-flight slot
         vkWaitForFences(engine->logicalDevice, 1, &fr.fence, VK_TRUE, UINT64_MAX);
-        vkResetFences(engine->logicalDevice, 1, &fr.fence);
 
         // Tick decoder: latch a frame + external views + current surface
         decoder->advancePlayback();
 
         if (decoder->externalLumaView == VK_NULL_HANDLE || decoder->externalChromaView == VK_NULL_HANDLE)
         {
+            if (iteration % 100 == 0) {
+                std::cout << "[Motive2D] Waiting for decoder frames... (iteration " << iteration << ")\n";
+            }
             glfwPollEvents();
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            iteration++;
             continue;
         }
+
+        // We have valid views, so we'll submit work - reset the fence now
+        vkResetFences(engine->logicalDevice, 1, &fr.fence);
 
         VulkanSurface surf{};
         if (!decoder->getCurrentSurface(surf) || !surf.valid)
@@ -432,12 +459,13 @@ void Motive2D::run()
             {
                 // ColorGrading::dispatch already published to its Display2D (gradingWindow)
                 // via publishOutputToDisplay(), but it's harmless to be explicit:
+                ColorGrading::Output out = colorGrading->output(static_cast<uint32_t>(currentFrame));
                 PresentInput in{};
-                in.image  = colorGrading->outputImage(static_cast<uint32_t>(currentFrame));
-                in.view   = colorGrading->outputImageView(static_cast<uint32_t>(currentFrame));
-                in.layout = VK_IMAGE_LAYOUT_GENERAL;
-                in.extent = colorGrading->outputExtent_;
-                in.format = colorGrading->outputFormat_;
+                in.image  = out.image;
+                in.view   = out.view;
+                in.layout = out.layout;
+                in.extent = out.extent;
+                in.format = out.format;
                 gradingWindow->setPresentInput(in);
             }
             else

@@ -882,6 +882,11 @@ void RenderDevice::createLogicalDevice()
     enabledSync2Features.synchronization2 = VK_TRUE;
     enabledTimelineFeatures.pNext = &enabledSync2Features;
 
+    enabledVideoMaintenance1Features = {};
+    enabledVideoMaintenance1Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_1_FEATURES_KHR;
+    enabledVideoMaintenance1Features.videoMaintenance1 = VK_TRUE;
+    enabledSync2Features.pNext = &enabledVideoMaintenance1Features;
+
     enabledFeatures2 = {};
     enabledFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     enabledFeatures2.features.samplerAnisotropy = VK_TRUE;

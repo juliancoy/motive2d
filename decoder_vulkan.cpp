@@ -81,8 +81,7 @@ static std::string pixelFormatDescription(AVPixelFormat fmt)
     return out;
 }
 
-
-// Local FFmpeg error-string helper (replaces ffmpegErrorString)
+// Local FFmpeg error-string helper
 static std::string avErrStr(int err)
 {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
@@ -203,7 +202,6 @@ DecoderVulkan::DecoderVulkan(const std::filesystem::path& videoPath, Engine2D* e
         return;
     }
 
-    // Create sampler lazily or now
     if (engine) {
         sampler = createLinearClampSampler();
     }
@@ -223,22 +221,38 @@ DecoderVulkan::~DecoderVulkan() {
     cleanupFFmpeg();
 }
 
+static AVPixelFormat chooseUsefulPixFmtForConfig(const AVCodecContext* c)
+{
+    if (!c) return AV_PIX_FMT_NONE;
+
+    // With hwaccel, codecCtx->pix_fmt is usually the hw surface (e.g. AV_PIX_FMT_VULKAN),
+    // and the *actual* subsampling/bit depth lives in sw_pix_fmt.
+    if (c->pix_fmt == AV_PIX_FMT_VULKAN && c->sw_pix_fmt != AV_PIX_FMT_NONE)
+        return c->sw_pix_fmt;
+
+    // If pix_fmt is unknown but sw_pix_fmt is known, use sw_pix_fmt.
+    if (c->pix_fmt == AV_PIX_FMT_NONE && c->sw_pix_fmt != AV_PIX_FMT_NONE)
+        return c->sw_pix_fmt;
+
+    return c->pix_fmt;
+}
+
 bool DecoderVulkan::openInputAndCodec(const std::filesystem::path& videoPath)
 {
     if (avformat_open_input(&formatCtx, videoPath.string().c_str(), nullptr, nullptr) < 0) {
-        throw std::runtime_error("[Video] Failed to open input: " + videoPath.string());
+        throw std::runtime_error("[DecoderVulkan] Failed to open input: " + videoPath.string());
     }
 
     formatCtx->interrupt_callback.callback = interrupt_callback;
     formatCtx->interrupt_callback.opaque = this;
 
     if (avformat_find_stream_info(formatCtx, nullptr) < 0) {
-        throw std::runtime_error("[Video] Failed to find stream info.");
+        throw std::runtime_error("[DecoderVulkan] Failed to find stream info.");
     }
 
     videoStreamIndex = av_find_best_stream(formatCtx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (videoStreamIndex < 0) {
-        throw std::runtime_error("[Video] No video stream found.");
+        throw std::runtime_error("[DecoderVulkan] No video stream found.");
     }
 
     AVStream* videoStream = formatCtx->streams[videoStreamIndex];
@@ -246,31 +260,73 @@ bool DecoderVulkan::openInputAndCodec(const std::filesystem::path& videoPath)
 
     const AVCodec* codec = avcodec_find_decoder(videoStream->codecpar->codec_id);
     if (!codec) {
-        throw std::runtime_error("[Video] Decoder not found.");
+        throw std::runtime_error("[DecoderVulkan] Decoder not found.");
     }
 
     codecCtx = avcodec_alloc_context3(codec);
     if (!codecCtx) {
-        throw std::runtime_error("[Video] Failed to allocate codec context.");
+        throw std::runtime_error("[DecoderVulkan] Failed to allocate codec context.");
     }
 
     if (avcodec_parameters_to_context(codecCtx, videoStream->codecpar) < 0) {
-        throw std::runtime_error("[Video] Failed to copy codec parameters.");
+        throw std::runtime_error("[DecoderVulkan] Failed to copy codec parameters.");
     }
 
     // Initialize Vulkan hw device context (requires Engine2D)
     if (!initFFmpegVulkanDevice()) {
-        // valid stays false; caller can inspect reason
         return false;
     }
 
-    // Allow FFmpeg internal threading if it wants (this does not change your bounded queue)
+    // Manually create a hw_frames_ctx to override the image format selected by FFmpeg.
+    // The default format (VK_FORMAT_G8_B8R8_2PLANE_420_UNORM) used for NV12 is not
+    // supported by the user's driver for video decoding. We will force a 2-plane
+    // format using VK_FORMAT_R8_UNORM and VK_FORMAT_R8G8_UNORM, which is a common fallback.
+    AVBufferRef* hw_frames_ref = av_hwframe_ctx_alloc(codecCtx->hw_device_ctx);
+    if (!hw_frames_ref) {
+        throw std::runtime_error("[DecoderVulkan] av_hwframe_ctx_alloc failed.");
+    }
+    AVHWFramesContext* frames_ctx = (AVHWFramesContext*)(hw_frames_ref->data);
+    AVVulkanFramesContext* vk_frames_ctx = (AVVulkanFramesContext*)frames_ctx->hwctx;
+
+    frames_ctx->format = AV_PIX_FMT_VULKAN;
+    frames_ctx->sw_format = AV_PIX_FMT_NV12; // Assume NV12, which matches the failing format
+    frames_ctx->width = codecCtx->width;
+    frames_ctx->height = codecCtx->height;
+
+    // Set the Vulkan formats for the two planes of NV12
+    vk_frames_ctx->format[0] = VK_FORMAT_R8_UNORM;   // Y plane
+    vk_frames_ctx->format[1] = VK_FORMAT_R8G8_UNORM; // Interleaved UV plane
+
+    // Set the image usage flags required for video decoding
+    vk_frames_ctx->usage = static_cast<VkImageUsageFlagBits>(
+                           VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR |
+                           VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR |
+                           VK_IMAGE_USAGE_SAMPLED_BIT |
+                           VK_IMAGE_USAGE_STORAGE_BIT |
+                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                           VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+    // Set image creation flags, including PROFILE_INDEPENDENT to resolve the VUID-VkImageCreateInfo-usage-04815 error.
+    vk_frames_ctx->img_flags = VK_IMAGE_CREATE_VIDEO_PROFILE_INDEPENDENT_BIT_KHR |
+                               VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
+                               VK_IMAGE_CREATE_ALIAS_BIT |
+                               VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+
+    int ret = av_hwframe_ctx_init(hw_frames_ref);
+    if (ret < 0) {
+        av_buffer_unref(&hw_frames_ref);
+        throw std::runtime_error("[DecoderVulkan] av_hwframe_ctx_init failed: " + avErrStr(ret));
+    }
+    codecCtx->hw_frames_ctx = av_buffer_ref(hw_frames_ref);
+    av_buffer_unref(&hw_frames_ref);
+
+    // Allow FFmpeg internal threading
     unsigned int hwThreads = std::thread::hardware_concurrency();
     codecCtx->thread_count = hwThreads > 0 ? static_cast<int>(hwThreads) : 0;
     codecCtx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
 
     if (avcodec_open2(codecCtx, codec, nullptr) < 0) {
-        throw std::runtime_error("[Video] Failed to open codec.");
+        throw std::runtime_error("[DecoderVulkan] Failed to open codec.");
     }
 
     width  = static_cast<uint32_t>(codecCtx->width);
@@ -279,7 +335,7 @@ bool DecoderVulkan::openInputAndCodec(const std::filesystem::path& videoPath)
     frame = av_frame_alloc();
     packet = av_packet_alloc();
     if (!frame || !packet) {
-        throw std::runtime_error("[Video] Failed to allocate AVFrame/AVPacket.");
+        throw std::runtime_error("[DecoderVulkan] Failed to allocate AVFrame/AVPacket.");
     }
 
     // FPS + duration
@@ -292,11 +348,18 @@ bool DecoderVulkan::openInputAndCodec(const std::filesystem::path& videoPath)
         durationSeconds = static_cast<double>(formatCtx->duration) / static_cast<double>(AV_TIME_BASE);
     }
 
-    // Pixel format config
-    if (!configureFormatForPixelFormat(codecCtx->sw_pix_fmt)) {
-        throw std::runtime_error("[Video] Unsupported pixel format: " +
-                                 pixelFormatDescription(codecCtx->sw_pix_fmt));
+    // Pixel format config:
+    // Use sw_pix_fmt when decode output is AV_PIX_FMT_VULKAN.
+    const AVPixelFormat cfgFmt = chooseUsefulPixFmtForConfig(codecCtx);
+    if (!configureFormatForPixelFormat(cfgFmt)) {
+        throw std::runtime_error("[DecoderVulkan] Unsupported pixel format: " +
+                                 pixelFormatDescription(cfgFmt));
     }
+
+    // Helpful logging: shows both hw pix_fmt and sw_pix_fmt.
+    std::cerr << "[DecoderVulkan] codecCtx->pix_fmt=" << pixelFormatDescription(codecCtx->pix_fmt)
+              << " sw_pix_fmt=" << pixelFormatDescription(codecCtx->sw_pix_fmt)
+              << " (config fmt=" << pixelFormatDescription(cfgFmt) << ")\n";
 
     return true;
 }
@@ -355,7 +418,7 @@ bool DecoderVulkan::initFFmpegVulkanDevice()
         VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR);
     q++;
 
-    // Some FFmpeg builds expect these “extra” entries even if they duplicate graphics
+    // Some FFmpeg builds expect “extra” entries even if they duplicate graphics
     vkctx->qf[q].idx = engine->graphicsQueueFamilyIndex;
     vkctx->qf[q].num = 1;
     vkctx->qf[q].flags = static_cast<VkQueueFlagBits>(VK_QUEUE_TRANSFER_BIT);
@@ -374,29 +437,33 @@ bool DecoderVulkan::initFFmpegVulkanDevice()
     vkctx->lock_queue = nullptr;
     vkctx->unlock_queue = nullptr;
 
-    // Extensions: use what you had (adjust if your environment differs)
-    static const char* instanceExts[] = { "VK_KHR_surface", "VK_KHR_xcb_surface" };
-    static const char* deviceExts[] = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
-        VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
-        VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
-        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+        // Extensions.
+        // NOTE: Keeping Vulkan Video extensions enabled is what triggers FFmpeg/driver probing.
+        // If you want a "safe fallback" mode, you can gate these behind a runtime flag and
+        // disable them when the source stream is known to be unsupported (e.g. H.264 4:2:2 10-bit).
+        static const char* instanceExts[] = { "VK_KHR_surface", "VK_KHR_xcb_surface" };
+        static const char* deviceExts[] = {
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+            VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+            VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
+            VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+            VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
 
-        VK_KHR_VIDEO_QUEUE_EXTENSION_NAME,
-        VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME,
-        VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME,
-        VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME,
+            // Try disabling H.265 video decode extension to see if it helps with format issues
+            VK_KHR_VIDEO_QUEUE_EXTENSION_NAME,
+            VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME,
+            VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME,
+            VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME,
 
-        // optional / nice-to-have depending on your driver/build:
-        VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
-        VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
-        VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
-        VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
-        VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME,
-        VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME,
-        VK_EXT_SHADER_OBJECT_EXTENSION_NAME,
-    };
+            // optional / nice-to-have depending on your driver/build:
+            VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+            VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
+            VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
+            VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+            VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME,
+            VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME,
+            VK_EXT_SHADER_OBJECT_EXTENSION_NAME,
+        };
 
     vkctx->enabled_inst_extensions = instanceExts;
     vkctx->nb_enabled_inst_extensions = 2;
@@ -404,9 +471,9 @@ bool DecoderVulkan::initFFmpegVulkanDevice()
     vkctx->enabled_dev_extensions = deviceExts;
     vkctx->nb_enabled_dev_extensions = static_cast<int>(sizeof(deviceExts) / sizeof(deviceExts[0]));
 
-    // Features
+    // Features (FIX: use vkGetPhysicalDeviceFeatures2, not vkGetPhysicalDeviceFeatures into features2.features)
     VkPhysicalDeviceFeatures2 features2{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
-    vkGetPhysicalDeviceFeatures(engine->physicalDevice, &features2.features);
+    vkGetPhysicalDeviceFeatures2(engine->physicalDevice, &features2);
     vkctx->device_features = features2;
 
     const int ret = av_hwdevice_ctx_init(hwDeviceCtx);
@@ -448,32 +515,34 @@ bool DecoderVulkan::configureFormatForPixelFormat(AVPixelFormat pix_fmt)
     chromaWidth  = std::max<uint32_t>(1u, (width  + chromaDivX - 1) / chromaDivX);
     chromaHeight = std::max<uint32_t>(1u, (height + chromaDivY - 1) / chromaDivY);
 
-    // Remove dependence on PrimitiveYuvFormat:
-    // We only keep what the downstream needs.
-    bool supported = false;
     swapChromaUV = false;
-
     if (pix_fmt == AV_PIX_FMT_NV12) {
-        supported = true;
         swapChromaUV = false;
     }
     else if (pix_fmt == AV_PIX_FMT_NV21) {
-        supported = true;
         swapChromaUV = true;
     }
     else {
         // Accept common planar subsampling shapes if you later add planar support.
-        // If your pipeline is strictly NV12/NV21-only, change this to supported=false.
         const bool is420 = (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 1);
         const bool is422 = (desc->log2_chroma_w == 1 && desc->log2_chroma_h == 0);
         const bool is444 = (desc->log2_chroma_w == 0 && desc->log2_chroma_h == 0);
-        supported = (is420 || is422 || is444);
+        if (! (is420 || is422 || is444)) {
+            throw std::runtime_error(
+                "[DecoderVulkan] Unsupported pixel format (only NV12/NV21/4:2:0, 4:2:2, 4:4:4 supported): " +
+                pixelFormatDescription(pix_fmt));
+        }
     }
 
-    bitDepth = desc->comp[0].depth;
+    // FIX: compute max component depth (not just comp[0])
+    int maxDepth = 0;
+    for (int i = 0; i < desc->nb_components; ++i) {
+        maxDepth = std::max(maxDepth, desc->comp[i].depth);
+    }
+    bitDepth = maxDepth;
     bytesPerComponent = (bitDepth > 8) ? 2 : 1;
 
-    return supported;
+    return true;
 }
 
 // ------------------------------
@@ -531,7 +600,7 @@ void DecoderVulkan::asyncDecodeLoop()
             }
 
             if (!f.vk.validate()) {
-                throw std::runtime_error("[Video] decoded frame missing/invalid Vulkan surface");
+                throw std::runtime_error("[DecoderVulkan] decoded frame missing/invalid Vulkan surface");
             }
 
             if (!decodedQ.push(std::move(f))) {
@@ -539,11 +608,11 @@ void DecoderVulkan::asyncDecodeLoop()
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "[Video] asyncDecodeLoop exception: " << e.what() << std::endl;
+        std::cerr << "[DecoderVulkan] asyncDecodeLoop exception: " << e.what() << std::endl;
     }
 
     threadRunning.store(false);
-    decodedQ.stop(); // wake consumer if blocking
+    decodedQ.stop();
 }
 
 // ------------------------------
@@ -561,7 +630,7 @@ bool DecoderVulkan::decodeNextFrame(DecodedFrame& out)
                     const int sp = avcodec_send_packet(codecCtx, packet);
                     if (sp < 0) {
                         av_packet_unref(packet);
-                        throw std::runtime_error("[Video] avcodec_send_packet failed: " + avErrStr(sp));
+                        throw std::runtime_error("[DecoderVulkan] avcodec_send_packet failed: " + avErrStr(sp));
                     }
                 }
                 av_packet_unref(packet);
@@ -579,48 +648,56 @@ bool DecoderVulkan::decodeNextFrame(DecodedFrame& out)
 
             // If dimensions / format change midstream, update config
             if (width != static_cast<uint32_t>(frame->width) ||
-                height != static_cast<uint32_t>(frame->height) ||
-                frameFmt != sourcePixelFormat)
+                height != static_cast<uint32_t>(frame->height))
             {
                 width  = static_cast<uint32_t>(frame->width);
                 height = static_cast<uint32_t>(frame->height);
-                if (!configureFormatForPixelFormat(frameFmt)) {
+            }
+
+            // When hwaccel is used, frameFmt is AV_PIX_FMT_VULKAN; configureFormat must be based on sw_format.
+            // If the underlying sw format changes (rare, but can happen), update config.
+            const AVPixelFormat cfgFmt = (frameFmt == AV_PIX_FMT_VULKAN)
+                ? codecCtx->sw_pix_fmt
+                : frameFmt;
+
+            if (cfgFmt != sourcePixelFormat) {
+                if (!configureFormatForPixelFormat(cfgFmt)) {
                     av_frame_unref(frame);
-                    throw std::runtime_error("[Video] Unsupported pixel format during decode: " +
-                                             pixelFormatDescription(frameFmt));
+                    throw std::runtime_error("[DecoderVulkan] Unsupported pixel format during decode: " +
+                                             pixelFormatDescription(cfgFmt));
                 }
             }
 
-            // We need to keep the frame alive for zero-copy
             out.reset();
             out.avFrame = av_frame_clone(frame);
             if (!out.avFrame) {
                 av_frame_unref(frame);
-                throw std::runtime_error("[Video] av_frame_clone failed");
+                throw std::runtime_error("[DecoderVulkan] av_frame_clone failed");
             }
 
-            // Extract Vulkan surface metadata
+            // Expect Vulkan output for zero-copy
             if (out.avFrame->format != AV_PIX_FMT_VULKAN) {
+                const std::string got = pixelFormatDescription(static_cast<AVPixelFormat>(out.avFrame->format));
                 av_frame_unref(frame);
-                throw std::runtime_error("[Video] Decoder did not output AV_PIX_FMT_VULKAN");
+                throw std::runtime_error(
+                    "[DecoderVulkan] Decoder did not output AV_PIX_FMT_VULKAN (got " + got +
+                    "). If this is expected for some sources, add a software->Vulkan upload path or disable GPU decode.");
             }
 
             const AVVkFrame* vkf = reinterpret_cast<const AVVkFrame*>(out.avFrame->data[0]);
             if (!vkf) {
                 av_frame_unref(frame);
-                throw std::runtime_error("[Video] AVVkFrame is null");
+                throw std::runtime_error("[DecoderVulkan] AVVkFrame is null");
             }
 
             out.vk.valid = true;
             out.vk.width  = static_cast<uint32_t>(out.avFrame->width);
             out.vk.height = static_cast<uint32_t>(out.avFrame->height);
 
-            // Determine planes from provided VkImage array
             int nb_images = 0;
             while (nb_images < AV_NUM_DATA_POINTERS && vkf->img[nb_images]) nb_images++;
-            out.vk.planes = std::min<uint32_t>(static_cast<uint32_t>(std::max(nb_images, 0)), 2u);
+            out.vk.planes = std::min<uint32_t>(static_cast<uint32_t>(std::max(nb_images, 0)), 3u);
 
-            // Try to infer plane formats based on sw_pix_fmt
             const VkFormat* vkFormats = av_vkfmt_from_pixfmt(codecCtx->sw_pix_fmt);
 
             for (uint32_t i = 0; i < out.vk.planes; ++i) {
@@ -662,7 +739,7 @@ bool DecoderVulkan::decodeNextFrame(DecodedFrame& out)
             return false;
         }
 
-        std::cerr << "[Video] avcodec_receive_frame error: " << avErrStr(rf)
+        std::cerr << "[DecoderVulkan] avcodec_receive_frame error: " << avErrStr(rf)
                   << " (" << rf << ")\n";
         return false;
     }
@@ -732,7 +809,6 @@ bool DecoderVulkan::waitForVulkanFrameReady(const VulkanSurface& s)
     if (!engine) return false;
     if (!s.validate()) return false;
 
-    // Collect timeline semaphores
     std::vector<VkSemaphore> sems;
     std::vector<uint64_t> vals;
     sems.reserve(s.planes);
@@ -760,18 +836,24 @@ bool DecoderVulkan::createExternalViewsFromSurface(const VulkanSurface& s)
     if (!engine) return false;
     if (!s.validate()) return false;
 
-    // Note: views are device objects; safe to recreate each frame
     destroyExternalVideoViews();
 
-    // Heuristic: plane 0 (luma) uses COLOR aspect.
-    // Plane formats should be provided by av_vkfmt_from_pixfmt() when available.
+    // For 3-plane YUV420P: plane 0 = Y, plane 1 = U, plane 2 = V
+    // For 2-plane NV12: plane 0 = Y, plane 1 = UV interleaved
     VkFormat f0 = s.planeFormats[0] != VK_FORMAT_UNDEFINED ? s.planeFormats[0] : VK_FORMAT_R8_UNORM;
     externalLumaView = createImageView(s.images[0], f0, VK_IMAGE_ASPECT_COLOR_BIT);
 
     if (s.planes > 1) {
-        VkFormat f1 = s.planeFormats[1] != VK_FORMAT_UNDEFINED ? s.planeFormats[1] : VK_FORMAT_R8G8_UNORM;
+        // For 2-plane NV12, chroma is interleaved UV (R8G8)
+        // For 3-plane YUV420P, we might want to create separate U and V views,
+        // but the current pipeline expects only 2 views (luma + chroma).
+        // For now, create chroma view from plane 1 (U plane for 3-plane).
+        VkFormat f1 = s.planeFormats[1] != VK_FORMAT_UNDEFINED ? s.planeFormats[1] : VK_FORMAT_R8_UNORM;
         externalChromaView = createImageView(s.images[1], f1, VK_IMAGE_ASPECT_COLOR_BIT);
     }
+
+    // TODO: For 3-plane YUV420P, we might need to handle plane 2 (V) separately
+    // or modify the compute shader to sample from 3 separate textures.
 
     usingExternal =
         (externalLumaView != VK_NULL_HANDLE) &&
@@ -813,8 +895,6 @@ void DecoderVulkan::dropLateFrames(std::chrono::steady_clock::time_point now)
 {
     if (!clockInitialized) return;
 
-    // If we're significantly late, drop frames whose target time already passed.
-    // This keeps "real-time fps" rather than slowing down.
     while (true) {
         DecodedFrame tmp;
         if (!decodedQ.try_pop(tmp)) break;
@@ -823,10 +903,8 @@ void DecoderVulkan::dropLateFrames(std::chrono::steady_clock::time_point now)
         const auto target = playbackStartWall + std::chrono::duration<double>(ptsOffset);
 
         if (now + std::chrono::milliseconds(1) >= target) {
-            // It's already "in the past" -> drop and keep going
-            continue;
+            continue; // drop
         } else {
-            // This one is in the future; keep as candidate
             candidate = std::move(tmp);
             break;
         }
@@ -847,14 +925,12 @@ double DecoderVulkan::advancePlayback()
         candidate = std::move(f);
     }
 
-    // Initialize clock on first presented frame
     if (!clockInitialized) {
         clockInitialized = true;
         firstPtsSeconds = candidate->ptsSeconds;
         playbackStartWall = now;
     }
 
-    // If late a lot, drop to catch up
     {
         const double ptsOffset = candidate->ptsSeconds - firstPtsSeconds;
         const auto target = playbackStartWall + std::chrono::duration<double>(ptsOffset);
@@ -868,10 +944,9 @@ double DecoderVulkan::advancePlayback()
         return lastDisplayedSeconds;
     }
 
-    // Present candidate
     if (engine && candidate->vk.validate()) {
         if (!waitForVulkanFrameReady(candidate->vk)) {
-            std::cerr << "[Video] vkWaitSemaphores failed\n";
+            std::cerr << "[DecoderVulkan] vkWaitSemaphores failed\n";
         } else {
             createExternalViewsFromSurface(candidate->vk);
         }
@@ -891,7 +966,6 @@ bool DecoderVulkan::seek(float timeSeconds)
 
     timeSeconds = std::clamp(timeSeconds, 0.0f, static_cast<float>(durationSeconds));
 
-    // Stop thread & clear buffers
     const bool wasAsync = asyncDecoding;
     if (wasAsync) stopAsyncDecoding();
 
@@ -913,7 +987,7 @@ bool DecoderVulkan::seek(float timeSeconds)
     if (ret < 0) {
         seekTargetMicroseconds.store(-1);
         if (wasAsync) startAsyncDecoding();
-        throw std::runtime_error("[Video] seek failed: " + avErrStr(ret));
+        throw std::runtime_error("[DecoderVulkan] seek failed: " + avErrStr(ret));
     }
 
     avcodec_flush_buffers(codecCtx);

@@ -69,7 +69,7 @@ void FpsOverlay::updateFpsOverlay(
 
 
     const std::string text = formatFpsText(fpsValue);
-    fonts::FontBitmap bitmap = fonts::renderText(text, 26u);
+    font::FontBitmap bitmap = fonts::renderText(text, 26u);
     if (bitmap.width == 0 || bitmap.height == 0 || bitmap.pixels.empty())
     {
         info.enabled = false;

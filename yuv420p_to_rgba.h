@@ -1,4 +1,4 @@
-// nv12toBGR.h  (NV12 -> RGBA, pass owns output)
+// yuv420p_to_rgba.h  (YUV420P -> RGBA, pass owns output)
 #pragma once
 
 #include <vulkan/vulkan.h>
@@ -11,7 +11,7 @@
 class Engine2D;
 
 // Push constants must match your compute shader push constant block.
-struct nv12toBGRPushConstants
+struct yuv420pToBGRPushConstants
 {
     glm::ivec2 rgbaSize{0, 0};
     glm::ivec2 uvSize{0, 0};
@@ -19,24 +19,25 @@ struct nv12toBGRPushConstants
     uint32_t colorRange = 1; // 1=full, 0=limited (match your convention)
 };
 
-class Nv12ToRgbaPass
+class Yuv420pToRgbaPass
 {
 public:
     // IMPORTANT:
     // If your GLSL uses:
     //   layout(set=0,binding=0) uniform sampler2D yTex;
-    //   layout(set=0,binding=1) uniform sampler2D uvTex;
+    //   layout(set=0,binding=1) uniform sampler2D uTex;
+    //   layout(set=0,binding=2) uniform sampler2D vTex;
     // then the descriptor type MUST be VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.
-    Nv12ToRgbaPass(Engine2D* engine,
-                   uint32_t framesInFlight,
-                   int width,
-                   int height,
-                   VkDescriptorType inputDescriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    Yuv420pToRgbaPass(Engine2D* engine,
+                      uint32_t framesInFlight,
+                      int width,
+                      int height,
+                      VkDescriptorType inputDescriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 
-    ~Nv12ToRgbaPass();
+    ~Yuv420pToRgbaPass();
 
-    Nv12ToRgbaPass(const Nv12ToRgbaPass&) = delete;
-    Nv12ToRgbaPass& operator=(const Nv12ToRgbaPass&) = delete;
+    Yuv420pToRgbaPass(const Yuv420pToRgbaPass&) = delete;
+    Yuv420pToRgbaPass& operator=(const Yuv420pToRgbaPass&) = delete;
 
     // Build pipeline + outputs + descriptors.
     void initialize();
@@ -46,10 +47,12 @@ public:
 
     // Inputs must be valid at dispatch time.
     // For VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER you MUST provide samplers.
-    void setInputNV12(VkImageView yView,
-                      VkImageView uvView,
-                      VkSampler ySampler = VK_NULL_HANDLE,
-                      VkSampler uvSampler = VK_NULL_HANDLE);
+    void setInputYUV420P(VkImageView yView,
+                         VkImageView uView,
+                         VkImageView vView,
+                         VkSampler ySampler = VK_NULL_HANDLE,
+                         VkSampler uSampler = VK_NULL_HANDLE,
+                         VkSampler vSampler = VK_NULL_HANDLE);
 
     // Records bind+dispatch into cmd for this in-flight slot.
     // Does NOT begin/end the command buffer.
@@ -64,7 +67,7 @@ public:
     VkSampler outputSampler() const { return outputSampler_; } // linear clamp sampler created by pass
 
     // Push constants (set per frame)
-    nv12toBGRPushConstants pushConstants{};
+    yuv420pToBGRPushConstants pushConstants{};
 
     uint32_t framesInFlight() const { return framesInFlight_; }
     int width() const { return width_; }
@@ -91,14 +94,16 @@ private:
     int width_ = 0;
     int height_ = 0;
 
-    // For sampler2D NV12 inputs this should be VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.
+    // For sampler2D YUV420P inputs this should be VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.
     VkDescriptorType inputDescriptorType_ = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
     // Inputs (not owned)
     VkImageView yView_ = VK_NULL_HANDLE;
-    VkImageView uvView_ = VK_NULL_HANDLE;
+    VkImageView uView_ = VK_NULL_HANDLE;
+    VkImageView vView_ = VK_NULL_HANDLE;
     VkSampler ySampler_ = VK_NULL_HANDLE;
-    VkSampler uvSampler_ = VK_NULL_HANDLE;
+    VkSampler uSampler_ = VK_NULL_HANDLE;
+    VkSampler vSampler_ = VK_NULL_HANDLE;
 
     // Outputs (owned)
     VkFormat outFormat_ = VK_FORMAT_R8G8B8A8_UNORM;
